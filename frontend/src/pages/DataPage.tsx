@@ -1,0 +1,427 @@
+import { useState, useEffect } from 'react'
+import { inferSchema } from '../lib/ai'
+import type { Source, AppRecord, Field } from '../types'
+
+const TYPE_OPTIONS = [
+  { value: 'tasks',    label: '📋 Tasks / Todos' },
+  { value: 'habits',   label: '🌱 Habits & Health' },
+  { value: 'finances', label: '💰 Finances' },
+  { value: 'notes',    label: '📝 Notes / Journal' },
+  { value: 'calendar', label: '📅 Calendar' },
+  { value: 'custom',   label: '📦 Custom' },
+]
+
+const TYPE_COLORS: Record<string, string> = {
+  tasks: '#0969a2', habits: '#0d7a6a', finances: '#c97d10',
+  notes: '#a85500', calendar: '#6234b5', custom: '#57544c',
+}
+
+interface DataPageProps {
+  sources: Source[]
+  activeSourceId: string | null
+  onSelectSource: (id: string | null) => void
+  createSource: (params: { name: string; type: string; icon?: string; fields?: Field[] }) => Promise<Source>
+  deleteSource: (id: string) => Promise<void>
+  getRecords: (sourceId: string) => Promise<AppRecord[]>
+  createRecord: (sourceId: string, recordData: Record<string, unknown>) => Promise<AppRecord>
+  updateRecord: (recordId: string, recordData: Record<string, unknown>) => Promise<AppRecord>
+  deleteRecord: (recordId: string) => Promise<void>
+  bulkCreateRecords: (sourceId: string, recordsData: Record<string, unknown>[]) => Promise<AppRecord[]>
+}
+
+export default function DataPage({
+  sources, activeSourceId, onSelectSource,
+  createSource, deleteSource,
+  getRecords, createRecord, updateRecord, deleteRecord, bulkCreateRecords
+}: DataPageProps) {
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [records, setRecords]         = useState<AppRecord[]>([])
+  const [loadingRecs, setLoadingRecs] = useState(false)
+  const [editingCell, setEditingCell] = useState<{ recordId: string; fieldKey: string } | null>(null)
+  const [addingRow, setAddingRow]     = useState(false)
+  const [newRowData, setNewRowData]   = useState<Record<string, unknown>>({})
+
+  const activeSource = sources.find(s => s.id === activeSourceId)
+
+  // Load records when source changes
+  useEffect(() => {
+    if (!activeSourceId) return
+    let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoadingRecs(true)
+    getRecords(activeSourceId)
+      .then(recs => { if (!cancelled) { setRecords(recs); setLoadingRecs(false) } })
+      .catch(() => { if (!cancelled) setLoadingRecs(false) })
+    return () => { cancelled = true }
+  }, [activeSourceId, getRecords])
+
+  // ── Inline cell edit ──────────────────────────────────────────────────────
+  async function handleCellEdit(record: AppRecord, fieldKey: string, newValue: unknown) {
+    const updated: Record<string, unknown> = { ...record.data, [fieldKey]: newValue }
+    await updateRecord(record.id, updated)
+    setRecords(prev => prev.map(r => r.id === record.id ? { ...r, data: updated } : r))
+    setEditingCell(null)
+  }
+
+  // ── Add row ───────────────────────────────────────────────────────────────
+  async function handleAddRow() {
+    if (!activeSource || !activeSourceId) return
+    const rec = await createRecord(activeSourceId, newRowData)
+    setRecords(prev => [...prev, rec])
+    setNewRowData({})
+    setAddingRow(false)
+  }
+
+  // ── Delete row ────────────────────────────────────────────────────────────
+  async function handleDeleteRow(recordId: string) {
+    await deleteRecord(recordId)
+    setRecords(prev => prev.filter(r => r.id !== recordId))
+  }
+
+  const displayFields = activeSource?.fields?.filter(f => f.key !== 'id') || []
+
+  return (
+    <div style={styles.page}>
+      {/* Page header */}
+      <div style={styles.header}>
+        <div style={styles.pageIcon}>🗄️</div>
+        <div style={styles.pageTitle}>My Data</div>
+        <div style={styles.pageSub}>Your personal data sources. Apps you build read and write to these.</div>
+      </div>
+
+      <hr style={styles.divider} />
+
+      {/* Source grid */}
+      <div style={styles.sectionLabel}>Sources</div>
+      <div style={styles.sourceGrid}>
+        {sources.map(src => (
+          <div
+            key={src.id}
+            style={{ ...styles.sourceCard, ...(activeSourceId === src.id ? styles.sourceCardActive : {}) }}
+            onClick={() => { onSelectSource(src.id); setShowAddForm(false) }}
+          >
+            <span style={{ ...styles.typeBadge, background: `${TYPE_COLORS[src.type]}18`, color: TYPE_COLORS[src.type] }}>
+              {src.type}
+            </span>
+            <div style={styles.sourceIcon}>{src.icon}</div>
+            <div style={styles.sourceName}>{src.name}</div>
+            <div style={styles.sourceMeta}>{src.fields?.length || 0} fields</div>
+          </div>
+        ))}
+        <div style={styles.addCard} onClick={() => { setShowAddForm(true); onSelectSource(null) }}>
+          <span style={{ fontSize: 20 }}>+</span> Add data source
+        </div>
+      </div>
+
+      {/* Add source form */}
+      {showAddForm && (
+        <AddSourceForm
+          onSave={async ({ name, type, icon, raw }) => {
+            // 1. AI infers schema
+            const schema = await inferSchema(type, name, raw)
+            // 2. Create source with fields
+            const src = await createSource({ name, type, icon, fields: schema.fields })
+            // 3. Bulk-insert records
+            if (schema.records?.length > 0) {
+              const recs = await bulkCreateRecords(src.id, schema.records)
+              setRecords(recs)
+            }
+            setShowAddForm(false)
+            onSelectSource(src.id)
+          }}
+          onCancel={() => setShowAddForm(false)}
+        />
+      )}
+
+      {/* Source table */}
+      {activeSource && (
+        <div style={styles.tableSection}>
+          <div style={styles.tableHeader}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 22 }}>{activeSource.icon}</span>
+              <div>
+                <div style={styles.tableName}>{activeSource.name}</div>
+                <div style={styles.tableCount}>{records.length} records · {displayFields.length} fields</div>
+              </div>
+            </div>
+            <button style={styles.dangerBtn} onClick={async () => {
+              if (!confirm('Delete this source and all its records?')) return
+              await deleteSource(activeSourceId!)
+              onSelectSource(null)
+            }}>Delete source</button>
+          </div>
+
+          {loadingRecs ? (
+            <div style={styles.loading}>Loading records…</div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    {displayFields.map(f => (
+                      <th key={f.key} style={styles.th}>{f.label}</th>
+                    ))}
+                    <th style={{ ...styles.th, width: 32 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.map(record => (
+                    <tr key={record.id} style={styles.tr}>
+                      {displayFields.map(f => (
+                        <td key={f.key} style={styles.td} onClick={() => setEditingCell({ recordId: record.id, fieldKey: f.key })}>
+                          {editingCell?.recordId === record.id && editingCell?.fieldKey === f.key ? (
+                            <CellEditor
+                              field={f}
+                              value={record.data[f.key]}
+                              onSave={val => handleCellEdit(record, f.key, val)}
+                              onCancel={() => setEditingCell(null)}
+                            />
+                          ) : (
+                            <CellDisplay field={f} value={record.data[f.key]} />
+                          )}
+                        </td>
+                      ))}
+                      <td style={{ ...styles.td, width: 32 }}>
+                        <button style={styles.rowDel} onClick={() => handleDeleteRow(record.id)}>×</button>
+                      </td>
+                    </tr>
+                  ))}
+
+                  {/* Add row */}
+                  {addingRow ? (
+                    <tr style={styles.tr}>
+                      {displayFields.map(f => (
+                        <td key={f.key} style={styles.td}>
+                          <CellEditor
+                            field={f}
+                            value={newRowData[f.key] ?? ''}
+                            onSave={val => setNewRowData(prev => ({ ...prev, [f.key]: val }))}
+                            onCancel={() => {}}
+                            inline
+                          />
+                        </td>
+                      ))}
+                      <td style={styles.td}>
+                        <button style={styles.saveRowBtn} onClick={handleAddRow}>✓</button>
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr>
+                      <td colSpan={displayFields.length + 1} style={{ padding: '6px 12px' }}>
+                        <span style={styles.addRowBtn} onClick={() => setAddingRow(true)}>+ Add row</span>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Add Source Form ───────────────────────────────────────────────────────────
+
+interface AddSourceFormProps {
+  onSave: (params: { name: string; type: string; icon: string; raw: string }) => Promise<void>
+  onCancel: () => void
+}
+
+function AddSourceForm({ onSave, onCancel }: AddSourceFormProps) {
+  const [type, setType]       = useState('tasks')
+  const [name, setName]       = useState('')
+  const [raw, setRaw]         = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError]     = useState('')
+
+  const PLACEHOLDERS: Record<string, string> = {
+    tasks: '- Go to gym (due Monday)\n- Call dentist ★ urgent\n- Finish report by Friday',
+    habits: 'Reading: daily, 14 day streak\nGym: 3x/week, 5 day streak\nMeditate: daily, 2 day streak',
+    finances: 'Rent -$1800 Jan 1\nSalary +$4500 Jan 15\nGroceries -$120 Jan 16\nNetflix -$16 Jan 18',
+    notes: 'Jan 20 - Feeling great today, got a lot done. Mood: 😊\nJan 21 - Bit tired but pushed through the workout.',
+    calendar: 'Team standup - Mon/Wed/Fri 9am\nDentist appointment - Feb 3 at 2pm\nFlight to NYC - Feb 10',
+    custom: 'Paste any data in any format…',
+  }
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    if (!raw.trim()) { setError('Please paste some data first.'); return }
+    setLoading(true)
+    setError('')
+    try {
+      const icon = TYPE_OPTIONS.find(t => t.value === type)?.label.split(' ')[0] || '📦'
+      await onSave({ name: name || TYPE_OPTIONS.find(t => t.value === type)?.label.slice(3) || type, type, icon, raw })
+    } catch(err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div style={styles.addForm}>
+      <div style={styles.addFormTitle}>New Data Source</div>
+      <form onSubmit={handleSubmit}>
+        <div style={styles.fieldRow}>
+          <div style={styles.fieldCol}>
+            <label style={styles.fieldLabel}>Type</label>
+            <select style={styles.select} value={type} onChange={e => setType(e.target.value)}>
+              {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div style={{ ...styles.fieldCol, flex: 2 }}>
+            <label style={styles.fieldLabel}>Name</label>
+            <input style={styles.input} type="text" placeholder={`e.g. My ${type}`} value={name} onChange={e => setName(e.target.value)} />
+          </div>
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <label style={styles.fieldLabel}>Paste your data</label>
+          <div style={styles.pasteHint}>Anything works — bullet lists, paragraphs, tables. AI will structure it.</div>
+          <textarea
+            style={styles.textarea}
+            value={raw}
+            onChange={e => setRaw(e.target.value)}
+            placeholder={PLACEHOLDERS[type]}
+            rows={6}
+          />
+        </div>
+        {error && <div style={styles.errorMsg}>{error}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={styles.primaryBtn} disabled={loading}>
+            {loading ? '⟳ Structuring with AI…' : 'Structure & Save →'}
+          </button>
+          <button type="button" style={styles.secondaryBtn} onClick={onCancel}>Cancel</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+// ── Cell components ───────────────────────────────────────────────────────────
+
+interface CellDisplayProps {
+  field: Field
+  value: unknown
+}
+
+function CellDisplay({ field, value }: CellDisplayProps) {
+  if (value === null || value === undefined || value === '') return <span style={{ color: 'var(--text3)' }}>—</span>
+  if (field.type === 'boolean') {
+    return <span style={{ color: value ? 'var(--green)' : 'var(--text3)' }}>{value ? '✓' : '○'}</span>
+  }
+  if (field.key === 'priority') {
+    const c: Record<string, string> = { high: 'var(--red)', medium: 'var(--yellow)', low: 'var(--green)' }
+    return <span style={{ fontSize: 11, fontWeight: 500, color: c[String(value).toLowerCase()] || 'var(--text2)' }}>{String(value)}</span>
+  }
+  if (field.key === 'type') {
+    const c = String(value).toLowerCase() === 'income' ? 'var(--green)' : 'var(--red)'
+    return <span style={{ fontSize: 11, fontWeight: 500, color: c }}>{String(value)}</span>
+  }
+  return <span style={{ fontSize: 13 }}>{String(value)}</span>
+}
+
+interface CellEditorProps {
+  field: Field
+  value: unknown
+  onSave: (val: unknown) => void
+  onCancel: () => void
+  inline?: boolean
+}
+
+function CellEditor({ field, value, onSave, onCancel, inline }: CellEditorProps) {
+  const [val, setVal] = useState<unknown>(value ?? '')
+
+  function commit() { onSave(val) }
+  function handleKey(e: React.KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit() }
+    if (e.key === 'Escape') onCancel()
+  }
+
+  if (field.type === 'boolean') {
+    return (
+      <input type="checkbox" checked={!!val} onChange={e => { onSave(e.target.checked) }} autoFocus />
+    )
+  }
+  if (field.type === 'select' && field.options?.length) {
+    return (
+      <select style={styles.cellInput} value={val as string} onChange={e => setVal(e.target.value)} onBlur={commit} autoFocus>
+        <option value="">—</option>
+        {field.options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    )
+  }
+  return (
+    <input
+      style={styles.cellInput}
+      type={field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'}
+      value={val as string}
+      onChange={e => setVal(e.target.value)}
+      onBlur={inline ? undefined : commit}
+      onKeyDown={handleKey}
+      autoFocus={!inline}
+    />
+  )
+}
+
+const styles = {
+  page: { flex: 1, overflowY: 'auto' as const, padding: '56px 88px 80px', maxWidth: 1100 },
+  header: { marginBottom: 28 },
+  pageIcon: { fontSize: 44, marginBottom: 12, lineHeight: 1 },
+  pageTitle: { fontFamily: "'Lora', serif", fontSize: 36, fontWeight: 500, marginBottom: 6 },
+  pageSub: { fontSize: 14, color: 'var(--text3)', fontStyle: 'italic' as const, fontFamily: "'Lora', serif" },
+  divider: { border: 'none', borderTop: '1px solid var(--border)', margin: '24px 0' },
+  sectionLabel: { fontSize: 11, fontWeight: 500, color: 'var(--text3)', textTransform: 'uppercase' as const, letterSpacing: '0.06em', marginBottom: 10 },
+
+  sourceGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, marginBottom: 28 },
+  sourceCard: {
+    border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+    padding: 16, background: 'var(--bg)', cursor: 'pointer', transition: 'all 0.15s',
+  },
+  sourceCardActive: { borderColor: 'var(--accent)', background: 'var(--accent-s)' },
+  typeBadge: { display: 'inline-block', fontSize: 10, fontWeight: 500, padding: '2px 7px', borderRadius: 20, textTransform: 'uppercase' as const, letterSpacing: '0.03em', marginBottom: 8 },
+  sourceIcon: { fontSize: 22, marginBottom: 6 },
+  sourceName: { fontSize: 13.5, fontWeight: 500, marginBottom: 2 },
+  sourceMeta: { fontSize: 12, color: 'var(--text3)' },
+
+  addCard: {
+    border: '1.5px dashed var(--border2)', borderRadius: 'var(--radius)',
+    padding: 16, cursor: 'pointer', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', gap: 8, color: 'var(--text3)', fontSize: 13.5,
+    transition: 'all 0.15s', minHeight: 82,
+  },
+
+  addForm: {
+    border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+    background: 'var(--bg)', padding: 24, marginBottom: 28, boxShadow: 'var(--shadow-md)',
+  },
+  addFormTitle: { fontSize: 15, fontWeight: 500, marginBottom: 18 },
+  fieldRow: { display: 'flex', gap: 10, marginBottom: 14 },
+  fieldCol: { display: 'flex', flexDirection: 'column' as const, gap: 5, flex: 1 },
+  fieldLabel: { fontSize: 11.5, fontWeight: 500, color: 'var(--text2)' },
+  pasteHint: { fontSize: 12, color: 'var(--text3)', marginTop: 3, marginBottom: 7, fontStyle: 'italic' as const, fontFamily: "'Lora', serif" },
+  input: { padding: '8px 12px', border: '1px solid var(--border2)', borderRadius: 'var(--radius)', fontSize: 13.5, outline: 'none' },
+  select: { padding: '8px 12px', border: '1px solid var(--border2)', borderRadius: 'var(--radius)', fontSize: 13.5, outline: 'none', background: 'var(--bg)', cursor: 'pointer' },
+  textarea: { width: '100%', padding: '10px 12px', border: '1px solid var(--border2)', borderRadius: 'var(--radius)', fontSize: 13, resize: 'vertical' as const, outline: 'none', lineHeight: 1.6 },
+  errorMsg: { background: 'rgba(224,62,62,0.07)', border: '1px solid rgba(224,62,62,0.2)', color: 'var(--red)', padding: '8px 12px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 10 },
+  primaryBtn: { padding: '8px 18px', background: 'var(--accent)', color: 'white', border: 'none', borderRadius: 'var(--radius)', fontSize: 13.5, fontWeight: 500, cursor: 'pointer' },
+  secondaryBtn: { padding: '8px 14px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 13, color: 'var(--text2)', cursor: 'pointer' },
+
+  tableSection: { marginTop: 8 },
+  tableHeader: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14, gap: 16 },
+  tableName: { fontSize: 20, fontFamily: "'Lora', serif", fontWeight: 500 },
+  tableCount: { fontSize: 12, color: 'var(--text3)', marginTop: 2 },
+  dangerBtn: { padding: '6px 12px', background: 'transparent', border: '1px solid rgba(224,62,62,0.25)', color: 'var(--red)', borderRadius: 'var(--radius)', fontSize: 12.5, cursor: 'pointer', flexShrink: 0 },
+  loading: { padding: '24px 0', color: 'var(--text3)', fontSize: 13, fontStyle: 'italic' as const },
+
+  table: { width: '100%', borderCollapse: 'collapse' as const, fontSize: 13.5 },
+  th: { textAlign: 'left' as const, padding: '7px 12px', fontSize: 11, fontWeight: 500, color: 'var(--text3)', letterSpacing: '0.04em', textTransform: 'uppercase' as const, borderBottom: '1px solid var(--border)', background: 'var(--bg2)', whiteSpace: 'nowrap' as const },
+  tr: { transition: 'background 0.1s' },
+  td: { padding: '7px 12px', borderBottom: '1px solid var(--border)', color: 'var(--text2)', cursor: 'cell', maxWidth: 240 },
+
+  cellInput: { width: '100%', padding: '4px 8px', border: '1px solid var(--accent)', borderRadius: 4, fontSize: 13, outline: 'none', background: 'var(--bg)' },
+  rowDel: { background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 16, padding: '0 2px', opacity: 0.4, transition: 'opacity 0.1s' },
+  addRowBtn: { fontSize: 12.5, color: 'var(--text3)', cursor: 'pointer', padding: '4px 0' },
+  saveRowBtn: { background: 'var(--accent)', color: 'white', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 13 },
+}
