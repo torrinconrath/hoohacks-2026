@@ -190,6 +190,7 @@ Requirements:
             narrator.end_thinking()   # release lock even on error
             raise
         name = claude(name_system, f'App prompt: "{req.prompt}"', max_tokens=20).strip()
+        narrator.interrupt()
         return GenerateAppResponse(html=html, name=name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

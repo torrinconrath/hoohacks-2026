@@ -187,6 +187,19 @@ class AppNarrator:
 
         threading.Thread(target=_drain, daemon=True).start()
 
+    def interrupt(self) -> None:
+        """
+        Stop TTS playback immediately. Call after the HTTP response is done
+        to prevent audio from continuing past app generation.
+        """
+        sd.stop()   # cuts off any in-progress sd.play()/sd.wait() instantly
+        if self._think_q is not None:
+            while not self._think_q.empty():
+                try:
+                    self._think_q.get_nowait()
+                except queue.Empty:
+                    break
+
 
 # ─── INTEGRATION HELPER ───────────────────────────────────────────────────────
 
