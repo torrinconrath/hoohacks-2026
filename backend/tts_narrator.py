@@ -26,8 +26,9 @@ import queue
 import threading
 from pathlib import Path
 
+import numpy as np
+import sounddevice as sd
 import anthropic
-from elevenlabs import stream as el_stream
 from elevenlabs.client import ElevenLabs
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -39,6 +40,10 @@ ELEVENLABS_VOICE_ID = "nPczCjzI2devNBz1zQrb"   # Brian
 
 # Flash v2.5 = ~75ms latency, ideal for real-time narration
 ELEVENLABS_MODEL = "eleven_flash_v2_5"
+
+# PCM 22050 Hz — raw signed-int16, no codec/decoder needed (plays via sounddevice)
+ELEVENLABS_OUTPUT_FORMAT = "pcm_22050"
+ELEVENLABS_SAMPLE_RATE   = 22050
 
 # Batch raw thinking text before sending to the refactor LLM.
 # ~400 chars ≈ 2–3 sentences of thinking — enough for coherent narration.
@@ -78,20 +83,24 @@ def refactor_chunk(client: anthropic.Anthropic, raw_thinking: str) -> str:
 
 
 def _speak(el: ElevenLabs, text: str) -> None:
-    """Stream a narration string to ElevenLabs and play it locally."""
-    audio = el.text_to_speech.stream(
+    """Fetch narration as raw PCM from ElevenLabs and play via sounddevice."""
+    chunks = el.text_to_speech.convert_as_stream(
         text=text,
         voice_id=ELEVENLABS_VOICE_ID,
         model_id=ELEVENLABS_MODEL,
+        output_format=ELEVENLABS_OUTPUT_FORMAT,
     )
-    el_stream(audio)   # plays audio as it arrives, blocks until done
+    audio_bytes = b"".join(chunks)
+    audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+    sd.play(audio_np, samplerate=ELEVENLABS_SAMPLE_RATE)
+    sd.wait()  # blocks until playback done (keeps worker thread occupied)
 
 
 # ─── WORKER THREAD ────────────────────────────────────────────────────────────
 
 def _narrator_worker(
     anthropic_client: anthropic.Anthropic,
-    el: ElevenLabs,
+    el: ElevenLabs | None,
     thinking_q: queue.Queue,
 ) -> None:
     """
@@ -101,7 +110,7 @@ def _narrator_worker(
     buffer = ""
 
     def flush(text: str) -> None:
-        if not text.strip():
+        if not text.strip() or el is None:
             return
         try:
             narration = refactor_chunk(anthropic_client, text)
@@ -135,7 +144,10 @@ class AppNarrator:
 
     def __init__(self) -> None:
         self._anthropic = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-        self._el        = ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
+        el_key = os.getenv("ELEVENLABS_API_KEY", "")
+        self._el = ElevenLabs(api_key=el_key) if el_key else None
+        if not el_key:
+            print("[narrator] ELEVENLABS_API_KEY not set — TTS disabled")
         self._lock      = threading.Lock()   # prevents overlapping audio
         self._think_q: queue.Queue | None = None
         self._worker_t: threading.Thread | None = None
@@ -145,7 +157,8 @@ class AppNarrator:
         Call before streaming starts. Acquires the lock (waits if previous
         session's TTS is still playing) then starts a fresh worker thread.
         """
-        self._lock.acquire()
+        if not self._lock.acquire(timeout=30):
+            raise RuntimeError("Narrator busy — previous session still draining")
         self._think_q = queue.Queue()
         self._worker_t = threading.Thread(
             target=_narrator_worker,
@@ -156,7 +169,7 @@ class AppNarrator:
 
     def feed(self, thinking_chunk: str) -> None:
         """Feed a raw thinking delta into the pipeline."""
-        if self._think_q is not None:
+        if self._think_q is not None and self._el is not None:
             self._think_q.put(thinking_chunk)
 
     def end_thinking(self) -> None:

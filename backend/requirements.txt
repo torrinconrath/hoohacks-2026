@@ -47,3 +47,5 @@ uvicorn==0.29.0
 watchfiles==1.1.1
 websockets==16.0
 elevenlabs==1.54.0
+numpy>=1.26
+sounddevice>=0.5.1
