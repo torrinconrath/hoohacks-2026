@@ -139,7 +139,7 @@ export default function DataPage({
             </span>
             <div style={styles.sourceIcon}>{src.icon}</div>
             <div style={styles.sourceName}>{src.name}</div>
-            <div style={styles.sourceMeta}>{src.fields?.length || 0} fields</div>
+            <div style={styles.sourceMeta}> {(src.fields?.filter(f => f.key !== 'id').length || 0)} fields </div> 
           </div>
         ))}
         <div style={styles.addCard} onClick={() => { setShowAddForm(true); onSelectSource(null) }}>
