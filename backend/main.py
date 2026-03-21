@@ -16,7 +16,7 @@ load_dotenv()
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 MODEL  = "claude-sonnet-4-5"
 
-# ── Narrator (single shared instance — one voice at a time) ──────────────────
+# ── Narrator ──────────────────────────────────────────────────────────────────
 narrator = AppNarrator()
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -165,22 +165,18 @@ Requirements:
     name_system = "Generate a short 2-4 word app name. Reply with ONLY the name, no punctuation, no quotes."
 
     try:
-        # Generate app with concurrent TTS narration of Claude's thinking
-        with narrator.session():
-            html = strip_fences(
-                generate_app_with_narration(
-                    client=client,
-                    model=MODEL,
-                    app_system=app_system,
-                    user_prompt=f"Build: {req.prompt}{data_ctx}",
-                    narrator=narrator,
-                    max_tokens=8000,
-                )
+        narrator.start_session()
+        html = strip_fences(
+            generate_app_with_narration(
+                client=client,
+                model=MODEL,
+                app_system=app_system,
+                user_prompt=f"Build: {req.prompt}{data_ctx}",
+                narrator=narrator,
+                max_tokens=8000,
             )
-
-        # Name generation doesn't need narration — quick non-thinking call
+        )
         name = claude(name_system, f'App prompt: "{req.prompt}"', max_tokens=20).strip()
-
         return GenerateAppResponse(html=html, name=name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
