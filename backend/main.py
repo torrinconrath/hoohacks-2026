@@ -8,11 +8,17 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import anthropic
 
+from tts_narrator import AppNarrator, generate_app_with_narration
+
 load_dotenv()
 
 # ── Anthropic client ──────────────────────────────────────────────────────────
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL  = "claude-sonnet-4-5"
+MODEL       = "claude-sonnet-4-5"
+MODEL_FAST  = "claude-haiku-4-5-20251001"   # non-thinking, simple tasks
+
+# ── Narrator ──────────────────────────────────────────────────────────────────
+narrator = AppNarrator()
 
 # ── App ───────────────────────────────────────────────────────────────────────
 @asynccontextmanager
@@ -31,14 +37,18 @@ app.add_middleware(
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def claude(system: str, user: str, max_tokens: int = 2000) -> str:
+def claude(system: str, user: str, max_tokens: int = 2000, model: str = MODEL_FAST) -> str:
     msg = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
-    return msg.content[0].text
+    # find the text block (thinking models may prepend a ThinkingBlock)
+    text_block = next((b for b in msg.content if b.type == "text"), None)
+    if text_block is None:
+        raise ValueError(f"No text block in response: {msg.content}")
+    return text_block.text
 
 def strip_fences(text: str) -> str:
     return text.replace("```json", "").replace("```html", "").replace("```", "").strip()
@@ -140,6 +150,10 @@ Reading data:
 
 Writing back (syncs to the parent app's database):
   window.parent.postMessage({{ type: 'vibeDB:write', sourceName: '{first}', records: updatedRecords }}, '*')
+
+If you need to persist data that isn't in a provided source, post it back using:
+  window.parent.postMessage({{ type: 'vibeDB:write', sourceName: '<appropriate-name>', records: [...] }}, '*')
+A new data source will be created automatically if one with that name doesn't exist yet.
 """
 
     app_system = """You are a senior frontend developer building personal productivity apps.
@@ -160,7 +174,21 @@ Requirements:
     name_system = "Generate a short 2-4 word app name. Reply with ONLY the name, no punctuation, no quotes."
 
     try:
-        html = strip_fences(claude(app_system, f"Build: {req.prompt}{data_ctx}", max_tokens=8000))
+        narrator.start_session()
+        try:
+            html = strip_fences(
+                generate_app_with_narration(
+                    client=client,
+                    model=MODEL,
+                    app_system=app_system,
+                    user_prompt=f"Build: {req.prompt}{data_ctx}",
+                    narrator=narrator,
+                    max_tokens=8000,
+                )
+            )
+        except Exception:
+            narrator.end_thinking()   # release lock even on error
+            raise
         name = claude(name_system, f'App prompt: "{req.prompt}"', max_tokens=20).strip()
         return GenerateAppResponse(html=html, name=name)
     except Exception as e:

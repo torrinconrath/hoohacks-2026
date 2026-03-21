@@ -14,7 +14,7 @@ export default function App() {
   const [activeAppId, setActiveAppId]           = useState<string | null>(null)
 
   const {
-    sources, createSource, deleteSource,
+    sources, createSource, updateSource, deleteSource,
     getRecords, createRecord, updateRecord, deleteRecord,
     bulkCreateRecords, syncRecords,
   } = useSources(user?.id)
@@ -45,6 +45,7 @@ export default function App() {
             activeSourceId={activeSourceId}
             onSelectSource={setActiveSourceId}
             createSource={createSource}
+            updateSource={updateSource}
             deleteSource={async id => { await deleteSource(id); setActiveSourceId(null) }}
             getRecords={getRecords}
             createRecord={createRecord}
@@ -63,6 +64,8 @@ export default function App() {
             activeAppId={activeAppId}
             onSelectApp={id => setActiveAppId(id)}
             syncRecords={syncRecords}
+            createSource={createSource}
+            updateSource={updateSource}
           />
         )}
       </main>

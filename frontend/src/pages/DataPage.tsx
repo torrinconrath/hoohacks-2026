@@ -13,7 +13,16 @@ const TYPE_OPTIONS = [
 
 const TYPE_COLORS: Record<string, string> = {
   tasks: '#0969a2', habits: '#0d7a6a', finances: '#c97d10',
-  notes: '#a85500', calendar: '#6234b5', custom: '#57544c',
+  notes: '#a85500', calendar: '#6234b5', custom: '#57544c', app: '#7c6af5',
+}
+
+const MANUAL_DEFAULTS: Record<string, Omit<Field, 'key'>[]> = {
+  tasks:    [{ label: 'Title', type: 'text' }, { label: 'Priority', type: 'select', options: ['high','medium','low'] }, { label: 'Due Date', type: 'date' }, { label: 'Completed', type: 'boolean' }, { label: 'Notes', type: 'text' }],
+  habits:   [{ label: 'Name', type: 'text' }, { label: 'Frequency', type: 'select', options: ['daily','weekly'] }, { label: 'Streak', type: 'number' }, { label: 'Last Done', type: 'date' }],
+  finances: [{ label: 'Description', type: 'text' }, { label: 'Amount', type: 'number' }, { label: 'Category', type: 'text' }, { label: 'Date', type: 'date' }, { label: 'Type', type: 'select', options: ['income','expense'] }],
+  notes:    [{ label: 'Title', type: 'text' }, { label: 'Content', type: 'text' }, { label: 'Date', type: 'date' }, { label: 'Mood', type: 'select', options: ['great','good','okay','bad'] }],
+  calendar: [{ label: 'Title', type: 'text' }, { label: 'Date', type: 'date' }, { label: 'Time', type: 'text' }, { label: 'Location', type: 'text' }, { label: 'Notes', type: 'text' }],
+  custom:   [],
 }
 
 interface DataPageProps {
@@ -21,6 +30,7 @@ interface DataPageProps {
   activeSourceId: string | null
   onSelectSource: (id: string | null) => void
   createSource: (params: { name: string; type: string; icon?: string; fields?: Field[] }) => Promise<Source>
+  updateSource: (id: string, updates: Partial<Source>) => Promise<Source>
   deleteSource: (id: string) => Promise<void>
   getRecords: (sourceId: string) => Promise<AppRecord[]>
   createRecord: (sourceId: string, recordData: Record<string, unknown>) => Promise<AppRecord>
@@ -31,7 +41,7 @@ interface DataPageProps {
 
 export default function DataPage({
   sources, activeSourceId, onSelectSource,
-  createSource, deleteSource,
+  createSource, updateSource, deleteSource,
   getRecords, createRecord, updateRecord, deleteRecord, bulkCreateRecords
 }: DataPageProps) {
   const [showAddForm, setShowAddForm] = useState(false)
@@ -40,6 +50,10 @@ export default function DataPage({
   const [editingCell, setEditingCell] = useState<{ recordId: string; fieldKey: string } | null>(null)
   const [addingRow, setAddingRow]     = useState(false)
   const [newRowData, setNewRowData]   = useState<Record<string, unknown>>({})
+  const [addingField, setAddingField] = useState(false)
+  const [newFieldLabel, setNewFieldLabel] = useState('')
+  const [newFieldType, setNewFieldType]   = useState('text')
+  const [newFieldOptions, setNewFieldOptions] = useState('')
 
   const activeSource = sources.find(s => s.id === activeSourceId)
 
@@ -76,6 +90,26 @@ export default function DataPage({
   async function handleDeleteRow(recordId: string) {
     await deleteRecord(recordId)
     setRecords(prev => prev.filter(r => r.id !== recordId))
+  }
+
+  // ── Add field ─────────────────────────────────────────────────────────────
+  async function handleAddField() {
+    if (!activeSource || !activeSourceId || !newFieldLabel.trim()) return
+    const key = labelToKey(newFieldLabel) || 'field'
+    const newField: Field = {
+      key,
+      label: newFieldLabel.trim(),
+      type: newFieldType,
+      ...(newFieldType === 'select' && newFieldOptions.trim()
+        ? { options: newFieldOptions.split(',').map(o => o.trim()).filter(Boolean) }
+        : {}),
+    }
+    const updatedFields = [...(activeSource.fields || []), newField]
+    await updateSource(activeSourceId, { fields: updatedFields })
+    setAddingField(false)
+    setNewFieldLabel('')
+    setNewFieldType('text')
+    setNewFieldOptions('')
   }
 
   const displayFields = activeSource?.fields?.filter(f => f.key !== 'id') || []
@@ -129,6 +163,11 @@ export default function DataPage({
             setShowAddForm(false)
             onSelectSource(src.id)
           }}
+          onSaveManual={async ({ name, type, icon, fields }) => {
+            const src = await createSource({ name, type, icon, fields })
+            setShowAddForm(false)
+            onSelectSource(src.id)
+          }}
           onCancel={() => setShowAddForm(false)}
         />
       )}
@@ -162,6 +201,47 @@ export default function DataPage({
                       <th key={f.key} style={styles.th}>{f.label}</th>
                     ))}
                     <th style={{ ...styles.th, width: 32 }}></th>
+                    <th style={{ ...styles.th, width: addingField ? 280 : 32, padding: addingField ? '4px 8px' : undefined }}>
+                      {addingField ? (
+                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          <input
+                            autoFocus
+                            style={{ ...styles.cellInput, flex: 2, fontSize: 12 }}
+                            type="text"
+                            placeholder="Field name"
+                            value={newFieldLabel}
+                            onChange={e => setNewFieldLabel(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleAddField(); if (e.key === 'Escape') setAddingField(false) }}
+                          />
+                          <select
+                            style={{ ...styles.cellInput, flex: 1, fontSize: 12, cursor: 'pointer' }}
+                            value={newFieldType}
+                            onChange={e => setNewFieldType(e.target.value)}
+                          >
+                            {['text','number','date','boolean','select'].map(t => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
+                          </select>
+                          {newFieldType === 'select' && (
+                            <input
+                              style={{ ...styles.cellInput, flex: 2, fontSize: 12 }}
+                              type="text"
+                              placeholder="opt1,opt2"
+                              value={newFieldOptions}
+                              onChange={e => setNewFieldOptions(e.target.value)}
+                            />
+                          )}
+                          <button style={styles.saveRowBtn} onClick={handleAddField}>✓</button>
+                          <button style={{ ...styles.rowDel, opacity: 1 }} onClick={() => setAddingField(false)}>×</button>
+                        </div>
+                      ) : (
+                        <span
+                          title="Add field"
+                          style={{ cursor: 'pointer', color: 'var(--text3)', fontSize: 14, padding: '0 4px' }}
+                          onClick={() => setAddingField(true)}
+                        >+</span>
+                      )}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -184,6 +264,7 @@ export default function DataPage({
                       <td style={{ ...styles.td, width: 32 }}>
                         <button style={styles.rowDel} onClick={() => handleDeleteRow(record.id)}>×</button>
                       </td>
+                      <td style={styles.td} />
                     </tr>
                   ))}
 
@@ -204,10 +285,11 @@ export default function DataPage({
                       <td style={styles.td}>
                         <button style={styles.saveRowBtn} onClick={handleAddRow}>✓</button>
                       </td>
+                      <td style={styles.td} />
                     </tr>
                   ) : (
                     <tr>
-                      <td colSpan={displayFields.length + 1} style={{ padding: '6px 12px' }}>
+                      <td colSpan={displayFields.length + 2} style={{ padding: '6px 12px' }}>
                         <span style={styles.addRowBtn} onClick={() => setAddingRow(true)}>+ Add row</span>
                       </td>
                     </tr>
@@ -226,15 +308,33 @@ export default function DataPage({
 
 interface AddSourceFormProps {
   onSave: (params: { name: string; type: string; icon: string; raw: string }) => Promise<void>
+  onSaveManual: (params: { name: string; type: string; icon: string; fields: Field[] }) => Promise<void>
   onCancel: () => void
 }
 
-function AddSourceForm({ onSave, onCancel }: AddSourceFormProps) {
+function labelToKey(label: string): string {
+  return label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+}
+
+function AddSourceForm({ onSave, onSaveManual, onCancel }: AddSourceFormProps) {
+  const [mode, setMode]       = useState<'import' | 'manual'>('import')
   const [type, setType]       = useState('tasks')
   const [name, setName]       = useState('')
   const [raw, setRaw]         = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
+
+  // Manual mode field list (each has label, type, options)
+  const [manualFields, setManualFields] = useState<Array<{ label: string; type: string; options: string }>>(() =>
+    MANUAL_DEFAULTS['tasks'].map(f => ({ label: f.label, type: f.type, options: f.options?.join(',') || '' }))
+  )
+
+  function handleTypeChange(newType: string) {
+    setType(newType)
+    setManualFields(
+      (MANUAL_DEFAULTS[newType] || []).map(f => ({ label: f.label, type: f.type, options: f.options?.join(',') || '' }))
+    )
+  }
 
   const PLACEHOLDERS: Record<string, string> = {
     tasks: '- Go to gym (due Monday)\n- Call dentist ★ urgent\n- Finish report by Friday',
@@ -245,7 +345,7 @@ function AddSourceForm({ onSave, onCancel }: AddSourceFormProps) {
     custom: 'Paste any data in any format…',
   }
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmitImport(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     if (!raw.trim()) { setError('Please paste some data first.'); return }
     setLoading(true)
@@ -260,41 +360,152 @@ function AddSourceForm({ onSave, onCancel }: AddSourceFormProps) {
     }
   }
 
+  async function handleSubmitManual(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      const icon = TYPE_OPTIONS.find(t => t.value === type)?.label.split(' ')[0] || '📦'
+      const fields: Field[] = manualFields
+        .filter(f => f.label.trim())
+        .map(f => ({
+          key: labelToKey(f.label) || 'field',
+          label: f.label,
+          type: f.type,
+          ...(f.type === 'select' && f.options.trim() ? { options: f.options.split(',').map(o => o.trim()).filter(Boolean) } : {}),
+        }))
+      await onSaveManual({ name: name || TYPE_OPTIONS.find(t => t.value === type)?.label.slice(3) || type, type, icon, fields })
+    } catch(err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function updateField(i: number, key: string, val: string) {
+    setManualFields(prev => prev.map((f, idx) => idx === i ? { ...f, [key]: val } : f))
+  }
+
+  function removeField(i: number) {
+    setManualFields(prev => prev.filter((_, idx) => idx !== i))
+  }
+
+  function addField() {
+    setManualFields(prev => [...prev, { label: '', type: 'text', options: '' }])
+  }
+
   return (
     <div style={styles.addForm}>
       <div style={styles.addFormTitle}>New Data Source</div>
-      <form onSubmit={handleSubmit}>
-        <div style={styles.fieldRow}>
-          <div style={styles.fieldCol}>
-            <label style={styles.fieldLabel}>Type</label>
-            <select style={styles.select} value={type} onChange={e => setType(e.target.value)}>
-              {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </div>
-          <div style={{ ...styles.fieldCol, flex: 2 }}>
-            <label style={styles.fieldLabel}>Name</label>
-            <input style={styles.input} type="text" placeholder={`e.g. My ${type}`} value={name} onChange={e => setName(e.target.value)} />
-          </div>
-        </div>
-        <div style={{ marginBottom: 14 }}>
-          <label style={styles.fieldLabel}>Paste your data</label>
-          <div style={styles.pasteHint}>Anything works — bullet lists, paragraphs, tables. AI will structure it.</div>
-          <textarea
-            style={styles.textarea}
-            value={raw}
-            onChange={e => setRaw(e.target.value)}
-            placeholder={PLACEHOLDERS[type]}
-            rows={6}
-          />
-        </div>
-        {error && <div style={styles.errorMsg}>{error}</div>}
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button style={styles.primaryBtn} disabled={loading}>
-            {loading ? '⟳ Structuring with AI…' : 'Structure & Save →'}
+
+      {/* Mode tabs */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: 18, borderBottom: '1px solid var(--border)' }}>
+        {(['import', 'manual'] as const).map(m => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            style={{
+              padding: '7px 16px', background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 13, fontWeight: 500,
+              color: mode === m ? 'var(--accent)' : 'var(--text3)',
+              borderBottom: mode === m ? '2px solid var(--accent)' : '2px solid transparent',
+              marginBottom: -1,
+            }}
+          >
+            {m === 'import' ? '✨ AI Import' : '✏️ Manual Setup'}
           </button>
-          <button type="button" style={styles.secondaryBtn} onClick={onCancel}>Cancel</button>
+        ))}
+      </div>
+
+      {/* Shared: type + name */}
+      <div style={styles.fieldRow}>
+        <div style={styles.fieldCol}>
+          <label style={styles.fieldLabel}>Type</label>
+          <select style={styles.select} value={type} onChange={e => handleTypeChange(e.target.value)}>
+            {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
         </div>
-      </form>
+        <div style={{ ...styles.fieldCol, flex: 2 }}>
+          <label style={styles.fieldLabel}>Name</label>
+          <input style={styles.input} type="text" placeholder={`e.g. My ${type}`} value={name} onChange={e => setName(e.target.value)} />
+        </div>
+      </div>
+
+      {mode === 'import' ? (
+        <form onSubmit={handleSubmitImport}>
+          <div style={{ marginBottom: 14 }}>
+            <label style={styles.fieldLabel}>Paste your data</label>
+            <div style={styles.pasteHint}>Anything works — bullet lists, paragraphs, tables. AI will structure it.</div>
+            <textarea
+              style={styles.textarea}
+              value={raw}
+              onChange={e => setRaw(e.target.value)}
+              placeholder={PLACEHOLDERS[type]}
+              rows={6}
+            />
+          </div>
+          {error && <div style={styles.errorMsg}>{error}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={styles.primaryBtn} disabled={loading}>
+              {loading ? '⟳ Structuring with AI…' : 'Structure & Save →'}
+            </button>
+            <button type="button" style={styles.secondaryBtn} onClick={onCancel}>Cancel</button>
+          </div>
+        </form>
+      ) : (
+        <form onSubmit={handleSubmitManual}>
+          <div style={{ marginBottom: 14 }}>
+            <label style={styles.fieldLabel}>Fields</label>
+            <div style={styles.pasteHint}>Define the fields for your source. Add or remove as needed.</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+              {manualFields.map((f, i) => (
+                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                  <input
+                    style={{ ...styles.input, flex: 2 }}
+                    type="text"
+                    placeholder="Field label"
+                    value={f.label}
+                    onChange={e => updateField(i, 'label', e.target.value)}
+                  />
+                  <select
+                    style={{ ...styles.select, flex: 1 }}
+                    value={f.type}
+                    onChange={e => updateField(i, 'type', e.target.value)}
+                  >
+                    {['text','number','date','boolean','select'].map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                  <button type="button" style={{ ...styles.secondaryBtn, padding: '8px 10px', flexShrink: 0 }} onClick={() => removeField(i)}>×</button>
+                </div>
+              ))}
+              {/* Options input for select fields */}
+              {manualFields.map((f, i) => f.type === 'select' && (
+                <div key={`opts-${i}`} style={{ paddingLeft: 12, marginTop: -2 }}>
+                  <input
+                    style={{ ...styles.input, width: '100%', fontSize: 12 }}
+                    type="text"
+                    placeholder={`Options for "${f.label || 'select'}" (comma-separated, e.g. high,medium,low)`}
+                    value={f.options}
+                    onChange={e => updateField(i, 'options', e.target.value)}
+                  />
+                </div>
+              ))}
+            </div>
+            <button type="button" style={{ ...styles.secondaryBtn, marginTop: 8, fontSize: 12.5 }} onClick={addField}>
+              + Add field
+            </button>
+          </div>
+          {error && <div style={styles.errorMsg}>{error}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={styles.primaryBtn} disabled={loading}>
+              {loading ? '⟳ Creating…' : 'Create Source →'}
+            </button>
+            <button type="button" style={styles.secondaryBtn} onClick={onCancel}>Cancel</button>
+          </div>
+        </form>
+      )}
     </div>
   )
 }
