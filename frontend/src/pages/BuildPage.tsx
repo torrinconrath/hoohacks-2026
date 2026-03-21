@@ -57,7 +57,7 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
               type: inferFieldType(records[0][k]),
             }))
           : []
-        src = await createSource({ name: sourceName, type: 'app', icon: '⚡', fields: inferredFields })
+        src = await createSource({ name: sourceName, type: 'custom', icon: '⚡', fields: inferredFields })
       } else if (src.fields.length === 0 && records.length > 0) {
         // Companion source has no fields yet — infer and update
         const inferredFields: Field[] = Object.keys(records[0]).filter(k => k !== 'id').map(k => ({
@@ -115,13 +115,14 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
       setProgress(40)
       setProgressLabel('Generating app…')
       const { html, name: appName } = await generateApp(prompt, sourcesWithRecords)
+      console.log(html);
       if (!html || !html.includes('<')) throw new Error('No valid app generated. Try rephrasing.')
 
       setProgress(88)
       setProgressLabel('Finishing up…')
 
       // Create companion source for app-owned data
-      const companion = await createSource({ name: appName, type: 'app', icon: '⚡', fields: [] })
+      const companion = await createSource({ name: appName, type: 'custom', icon: '⚡', fields: [] })
 
       const app = await saveApp({
         name: appName,
@@ -135,6 +136,7 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
       onSelectApp(app.id)
 
     } catch(err) {
+        console.log(err);
       setError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
       setBuilding(false)
