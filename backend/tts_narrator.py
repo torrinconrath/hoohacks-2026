@@ -2,53 +2,46 @@
 tts_narrator.py
 ───────────────
 Concurrent TTS narrator for the Vibe API app generation pipeline.
+Uses ElevenLabs streaming TTS — no local model files required.
 
 While /api/generate-app streams Claude's extended thinking, this module:
   1. Receives raw thinking chunks via a thread-safe queue
-  2. Refactors each chunk into natural spoken narration (second Claude call)
-  3. Synthesises and plays each sentence via Kokoro ONNX on CPU
+  2. Batches and refactors each chunk into natural spoken narration (Haiku call)
+  3. Streams the narration to ElevenLabs and plays it back in a background thread
 
-Usage — integrate into main.py:
-
-    from tts_narrator import AppNarrator
-
-    narrator = AppNarrator()
-
-    # Inside generate_app(), replace the claude() call with a streaming version:
-    with narrator.run():
-        html = generate_app_with_narration(req, narrator)
+Fully non-blocking — the HTTP response returns as soon as HTML is ready.
+TTS finishes draining in the background.
 
 Install:
-    pip install kokoro-onnx sounddevice numpy
+    pip install elevenlabs anthropic python-dotenv
 
-Download model files alongside this script:
-    https://github.com/thewh1teagle/kokoro-onnx/releases/latest
-    → kokoro-v1.0.onnx
-    → voices-v1.0.bin
+Set env vars:
+    ANTHROPIC_API_KEY=...
+    ELEVENLABS_API_KEY=...
 """
 
 import os
 import re
 import queue
 import threading
-from contextlib import contextmanager
 from pathlib import Path
 
-import numpy as np
-import sounddevice as sd
 import anthropic
-from kokoro_onnx import Kokoro
+from elevenlabs import stream as el_stream
+from elevenlabs.client import ElevenLabs
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
-KOKORO_MODEL   = Path(__file__).parent / "tts" / "kokoro-v1.0.int8.onnx"
-KOKORO_VOICES  = Path(__file__).parent / "tts" / "voices-v1.0.bin"
-KOKORO_VOICE   = "am_adam"   # confident, clear male voice
-KOKORO_SPEED   = 1.0
-SAMPLE_RATE    = 24_000
+# Voice ID — "Brian" is a clear, warm male narrator voice.
+# Browse voices at: https://elevenlabs.io/voice-library
+# Or list yours: client.voices.get_all()
+ELEVENLABS_VOICE_ID = "nPczCjzI2devNBz1zQrb"   # Brian
 
-# How many raw thinking characters to batch before sending to the refactor step.
-# Smaller = more responsive narration. Larger = more coherent sentences.
+# Flash v2.5 = ~75ms latency, ideal for real-time narration
+ELEVENLABS_MODEL = "eleven_flash_v2_5"
+
+# Batch raw thinking text before sending to the refactor LLM.
+# ~400 chars ≈ 2–3 sentences of thinking — enough for coherent narration.
 CHUNK_BATCH_CHARS = 400
 
 # ─── NARRATION PROMPT ─────────────────────────────────────────────────────────
@@ -73,134 +66,113 @@ Output ONLY the spoken narration. Nothing else.
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 
-def split_sentences(text: str) -> list[str]:
-    """Split narration text into TTS-friendly sentence chunks."""
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    return [s.strip() for s in sentences if s.strip()]
-
-
 def refactor_chunk(client: anthropic.Anthropic, raw_thinking: str) -> str:
-    """Turn a raw thinking snippet into a spoken narration sentence."""
+    """Rewrite a raw thinking snippet as spoken narration via Haiku."""
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",   # fast + cheap for narration refactor
+        model="claude-haiku-4-5-20251001",
         max_tokens=200,
         system=NARRATOR_SYSTEM,
         messages=[{"role": "user", "content": raw_thinking}],
     )
     return response.content[0].text.strip()
 
-# ─── WORKER THREADS ───────────────────────────────────────────────────────────
 
-def _refactor_worker(
-    client: anthropic.Anthropic,
-    thinking_q: "queue.Queue[str | None]",
-    audio_q: "queue.Queue[np.ndarray | None]",
-    kokoro: Kokoro,
-):
+def _speak(el: ElevenLabs, text: str) -> None:
+    """Stream a narration string to ElevenLabs and play it locally."""
+    audio = el.text_to_speech.stream(
+        text=text,
+        voice_id=ELEVENLABS_VOICE_ID,
+        model_id=ELEVENLABS_MODEL,
+    )
+    el_stream(audio)   # plays audio as it arrives, blocks until done
+
+
+# ─── WORKER THREAD ────────────────────────────────────────────────────────────
+
+def _narrator_worker(
+    anthropic_client: anthropic.Anthropic,
+    el: ElevenLabs,
+    thinking_q: queue.Queue,
+) -> None:
     """
-    Reads raw thinking chunks → refactors to narration → synthesises audio.
-    Puts audio arrays into audio_q for the playback thread.
+    thinking_q  ->  batch  ->  refactor (Haiku)  ->  ElevenLabs stream  ->  speakers
+    Receives None as sentinel to flush the remaining buffer and stop.
     """
     buffer = ""
 
-    def flush(text: str):
+    def flush(text: str) -> None:
         if not text.strip():
             return
         try:
-            narration = refactor_chunk(client, text)
+            narration = refactor_chunk(anthropic_client, text)
             print(f"[narrator] {narration}")
-            for sentence in split_sentences(narration):
-                samples, _ = kokoro.create(
-                    sentence,
-                    voice=KOKORO_VOICE,
-                    speed=KOKORO_SPEED,
-                    lang="en-us",
-                )
-                audio_q.put(samples.astype(np.float32))
-        except Exception as e:
-            print(f"[narrator] refactor/tts error: {e}")
+            _speak(el, narration)
+        except Exception as exc:
+            print(f"[narrator] error: {exc}")
 
     while True:
         chunk = thinking_q.get()
-        if chunk is None:           # sentinel: generation finished
-            flush(buffer)           # flush whatever is left
-            audio_q.put(None)       # signal playback thread to stop
-            break
+
+        if chunk is None:           # sentinel — thinking stream is done
+            flush(buffer)
+            return
 
         buffer += chunk
 
-        # Flush when we have enough context for a meaningful narration
         if len(buffer) >= CHUNK_BATCH_CHARS:
             flush(buffer)
             buffer = ""
-
-
-def _playback_worker(audio_q: "queue.Queue[np.ndarray | None]"):
-    """Plays audio arrays sequentially as they arrive."""
-    while True:
-        item = audio_q.get()
-        if item is None:
-            break
-        sd.play(item, samplerate=SAMPLE_RATE)
-        sd.wait()
 
 
 # ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
 class AppNarrator:
     """
-    Drop-in narrator that runs alongside app generation.
-
-    Example:
-        narrator = AppNarrator()
-
-        with narrator.session():
-            # Stream Claude's thinking; feed chunks to narrator
-            for chunk in stream_thinking(...):
-                narrator.feed(chunk)
-        # Session exits → waits for all speech to finish
+    Non-blocking narrator. One generation at a time via a lock.
+    start_session() spins up a fresh worker thread.
+    end_thinking() signals it and drains in the background — never blocks HTTP.
     """
 
-    def __init__(self):
-        self._client  = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-        self._kokoro  = Kokoro(str(KOKORO_MODEL), str(KOKORO_VOICES))
-        self._think_q: queue.Queue[str | None] = queue.Queue()
-        self._audio_q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=4)
-        self._threads: list[threading.Thread] = []
+    def __init__(self) -> None:
+        self._anthropic = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        self._el        = ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
+        self._lock      = threading.Lock()   # prevents overlapping audio
+        self._think_q: queue.Queue | None = None
+        self._worker_t: threading.Thread | None = None
 
-    def _start(self):
-        t1 = threading.Thread(
-            target=_refactor_worker,
-            args=(self._client, self._think_q, self._audio_q, self._kokoro),
+    def start_session(self) -> None:
+        """
+        Call before streaming starts. Acquires the lock (waits if previous
+        session's TTS is still playing) then starts a fresh worker thread.
+        """
+        self._lock.acquire()
+        self._think_q = queue.Queue()
+        self._worker_t = threading.Thread(
+            target=_narrator_worker,
+            args=(self._anthropic, self._el, self._think_q),
             daemon=True,
         )
-        t2 = threading.Thread(
-            target=_playback_worker,
-            args=(self._audio_q,),
-            daemon=True,
-        )
-        t1.start()
-        t2.start()
-        self._threads = [t1, t2]
+        self._worker_t.start()
 
-    def feed(self, thinking_chunk: str):
-        """Send a raw thinking text chunk to the narration pipeline."""
-        self._think_q.put(thinking_chunk)
+    def feed(self, thinking_chunk: str) -> None:
+        """Feed a raw thinking delta into the pipeline."""
+        if self._think_q is not None:
+            self._think_q.put(thinking_chunk)
 
-    def _stop(self):
-        """Signal end of thinking stream and wait for speech to finish."""
-        self._think_q.put(None)     # tell refactor worker we're done
-        for t in self._threads:
-            t.join()
+    def end_thinking(self) -> None:
+        """
+        Signal end of thinking stream. Worker drains in the background —
+        returns immediately so the HTTP response is never blocked.
+        """
+        if self._think_q is not None:
+            self._think_q.put(None)     # sentinel
 
-    @contextmanager
-    def session(self):
-        """Context manager: starts workers on enter, drains on exit."""
-        self._start()
-        try:
-            yield self
-        finally:
-            self._stop()
+        def _drain() -> None:
+            if self._worker_t:
+                self._worker_t.join()
+            self._lock.release()        # allow next session to start
+
+        threading.Thread(target=_drain, daemon=True).start()
 
 
 # ─── INTEGRATION HELPER ───────────────────────────────────────────────────────
@@ -214,26 +186,16 @@ def generate_app_with_narration(
     max_tokens: int = 8000,
 ) -> str:
     """
-    Replacement for the claude() helper in main.py.
-    Streams extended thinking from Claude, feeding thinking chunks to the
-    narrator in real time, and returns the final HTML string.
+    Streams Claude with extended thinking enabled.
 
-    Drop-in usage in main.py:
+    - Thinking deltas  -> fed to narrator in real time
+    - Text deltas      -> accumulated and returned as the final HTML string
 
-        from tts_narrator import AppNarrator, generate_app_with_narration
-
-        narrator = AppNarrator()
-
-        @app.post("/api/generate-app", response_model=GenerateAppResponse)
-        def generate_app(req: GenerateAppRequest):
-            ...
-            with narrator.session():
-                html = generate_app_with_narration(
-                    client, MODEL, app_system, prompt, narrator
-                )
-            ...
+    Calls narrator.end_thinking() at the first text delta so TTS gets a head
+    start draining while the HTML is still streaming in.
     """
-    html_parts: list[str] = []
+    html_parts = []
+    thinking_ended = False
 
     with client.messages.stream(
         model=model,
@@ -243,22 +205,21 @@ def generate_app_with_narration(
         messages=[{"role": "user", "content": user_prompt}],
     ) as stream:
         for event in stream:
-            # Thinking delta → feed narrator
-            if (
-                hasattr(event, "type")
-                and event.type == "content_block_delta"
-                and hasattr(event, "delta")
-                and getattr(event.delta, "type", None) == "thinking_delta"
-            ):
-                narrator.feed(event.delta.thinking)
+            etype = getattr(event, "type", None)
+            delta = getattr(event, "delta", None)
+            dtype = getattr(delta, "type", None) if delta else None
 
-            # Text delta → accumulate HTML
-            elif (
-                hasattr(event, "type")
-                and event.type == "content_block_delta"
-                and hasattr(event, "delta")
-                and getattr(event.delta, "type", None) == "text_delta"
-            ):
-                html_parts.append(event.delta.text)
+            if etype == "content_block_delta":
+                if dtype == "thinking_delta":
+                    narrator.feed(delta.thinking)
+
+                elif dtype == "text_delta":
+                    if not thinking_ended:
+                        narrator.end_thinking()
+                        thinking_ended = True
+                    html_parts.append(delta.text)
+
+    if not thinking_ended:
+        narrator.end_thinking()
 
     return "".join(html_parts)
