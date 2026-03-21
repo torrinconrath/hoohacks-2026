@@ -145,6 +145,10 @@ Reading data:
 
 Writing back (syncs to the parent app's database):
   window.parent.postMessage({{ type: 'vibeDB:write', sourceName: '{first}', records: updatedRecords }}, '*')
+
+If you need to persist data that isn't in a provided source, post it back using:
+  window.parent.postMessage({{ type: 'vibeDB:write', sourceName: '<appropriate-name>', records: [...] }}, '*')
+A new data source will be created automatically if one with that name doesn't exist yet.
 """
 
     app_system = """You are a senior frontend developer building personal productivity apps.

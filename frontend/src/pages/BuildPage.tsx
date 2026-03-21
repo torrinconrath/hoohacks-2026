@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { generateApp } from '../lib/ai'
-import type { Source, AppRecord, App } from '../types'
+import type { Source, AppRecord, App, Field } from '../types'
+
+function inferFieldType(v: unknown): string {
+  if (typeof v === 'boolean') return 'boolean'
+  if (typeof v === 'number') return 'number'
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return 'date'
+  return 'text'
+}
 
 const SUGGESTIONS = [
   'a daily habit check-in with streaks and progress rings',
@@ -20,9 +27,11 @@ interface BuildPageProps {
   activeAppId: string | null
   onSelectApp: (id: string | null) => void
   syncRecords: (sourceId: string, recordsData: Record<string, unknown>[]) => Promise<void>
+  createSource: (params: { name: string; type: string; icon?: string; fields?: Field[] }) => Promise<Source>
+  updateSource: (id: string, updates: Partial<Source>) => Promise<Source>
 }
 
-export default function BuildPage({ sources, getRecords, apps, saveApp, deleteApp, activeAppId, onSelectApp, syncRecords }: BuildPageProps) {
+export default function BuildPage({ sources, getRecords, apps, saveApp, deleteApp, activeAppId, onSelectApp, syncRecords, createSource, updateSource }: BuildPageProps) {
   const [prompt, setPrompt]               = useState('')
   const [building, setBuilding]           = useState(false)
   const [error, setError]                 = useState('')
@@ -38,13 +47,31 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
     async function onMessage(e: MessageEvent) {
       if (!e.data || e.data.type !== 'vibeDB:write') return
       const { sourceName, records } = e.data as { sourceName: string; records: Record<string, unknown>[] }
-      const src = sources.find(s => s.name === sourceName)
-      if (!src || !syncRecords) return
+      let src = sources.find(s => s.name === sourceName)
+      if (!src) {
+        // Auto-create source with fields inferred from first record
+        const inferredFields: Field[] = records.length > 0
+          ? Object.keys(records[0]).filter(k => k !== 'id').map(k => ({
+              key: k,
+              label: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+              type: inferFieldType(records[0][k]),
+            }))
+          : []
+        src = await createSource({ name: sourceName, type: 'app', icon: '⚡', fields: inferredFields })
+      } else if (src.fields.length === 0 && records.length > 0) {
+        // Companion source has no fields yet — infer and update
+        const inferredFields: Field[] = Object.keys(records[0]).filter(k => k !== 'id').map(k => ({
+          key: k,
+          label: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+          type: inferFieldType(records[0][k]),
+        }))
+        await updateSource(src.id, { fields: inferredFields })
+      }
       await syncRecords(src.id, records)
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [sources, syncRecords])
+  }, [sources, syncRecords, createSource, updateSource])
 
   // ── Detect relevant sources from prompt ───────────────────────────────────
   function getRelevantSources(promptText: string): Source[] {
@@ -93,11 +120,14 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
       setProgress(88)
       setProgressLabel('Finishing up…')
 
+      // Create companion source for app-owned data
+      const companion = await createSource({ name: appName, type: 'app', icon: '⚡', fields: [] })
+
       const app = await saveApp({
         name: appName,
         prompt,
         html,
-        sourceIds: relevantSources.map(s => s.id)
+        sourceIds: [...relevantSources.map(s => s.id), companion.id]
       })
 
       setProgress(100)

@@ -22,6 +22,7 @@ const TYPE_COLORS: Record<string, string> = {
   notes:    '#a85500',
   calendar: '#6234b5',
   custom:   '#57544c',
+  app:      '#7c6af5',
 }
 
 export default function Sidebar({ user, sources, apps, activeView, activeSourceId, activeAppId, onNav, onSelectSource, onSelectApp }: SidebarProps) {
@@ -46,7 +47,7 @@ export default function Sidebar({ user, sources, apps, activeView, activeSourceI
 
         {/* Data sources */}
         <SectionLabel>Data Sources</SectionLabel>
-        {sources.map(src => (
+        {sources.filter(s => s.type !== 'app').map(src => (
           <SourceItem
             key={src.id}
             src={src}
@@ -58,6 +59,22 @@ export default function Sidebar({ user, sources, apps, activeView, activeSourceI
         <div style={styles.addBtn} onClick={() => { onNav('data'); onSelectSource(null) }}>
           <span style={{ fontSize: 15 }}>+</span> Add source
         </div>
+
+        {sources.some(s => s.type === 'app') && (
+          <>
+            <Divider />
+            <SectionLabel>App Data</SectionLabel>
+            {sources.filter(s => s.type === 'app').map(src => (
+              <SourceItem
+                key={src.id}
+                src={src}
+                active={activeSourceId === src.id}
+                color={TYPE_COLORS['app']}
+                onClick={() => { onNav('data'); onSelectSource(src.id) }}
+              />
+            ))}
+          </>
+        )}
 
         <Divider />
 
