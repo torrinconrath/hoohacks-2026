@@ -32,3 +32,20 @@ export interface App {
   source_ids: string[]
   created_at: string
 }
+
+export interface PlannedNewSource {
+  name: string
+  type: string
+  icon: string
+  fields: Field[]
+}
+
+export interface PlannedExistingSource {
+  source_id: string
+  source_name: string
+}
+
+export interface SourcePlan {
+  existing_sources: PlannedExistingSource[]
+  new_sources: PlannedNewSource[]
+}

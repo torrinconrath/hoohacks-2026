@@ -76,13 +76,36 @@ class SourceData(BaseModel):
     fields: list[dict]
     records: list[dict]
 
+class ExistingSourceSummary(BaseModel):
+    id: str
+    name: str
+    type: str
+    fields: list[dict]
+
+class PlannedNewSource(BaseModel):
+    name: str
+    type: str
+    icon: str
+    fields: list[dict]
+
+class PlannedExistingSource(BaseModel):
+    source_id: str
+    source_name: str
+
+class SourcePlan(BaseModel):
+    existing_sources: list[PlannedExistingSource] = []
+    new_sources: list[PlannedNewSource] = []
+
 class GenerateAppRequest(BaseModel):
     prompt: str
     sources: list[SourceData] = []
+    all_source_summaries: list[ExistingSourceSummary] = []
+    pinned_source_ids: list[str] = []
 
 class GenerateAppResponse(BaseModel):
     html: str
     name: str
+    source_plan: SourcePlan
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -127,33 +150,96 @@ Parse ALL items from the input. Be thorough."""
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def plan_sources(prompt: str, all_source_summaries: list[ExistingSourceSummary]) -> SourcePlan:
+    system = """You are a data architect for a personal productivity app generator.
+A user wants to build a custom HTML5 app. Decide:
+1. Which of the user's existing data sources the app should read/write (only link if genuinely needed).
+2. What new data sources to create for data the app needs to persist (be intentional — do NOT create generic placeholders).
+
+For new sources, design a complete field schema. Use only these types: text, number, boolean, date, select, url
+For select fields, include an "options" array. Always use lowercase_underscores for field keys.
+Choose an appropriate emoji icon for each new source.
+Type must be one of: tasks, habits, finances, notes, calendar, custom
+
+Return ONLY valid JSON — no markdown, no explanation:
+{
+  "existing_sources": [{"source_id": "<uuid>", "source_name": "<name>"}],
+  "new_sources": [
+    {
+      "name": "<Human-readable name>",
+      "type": "<type>",
+      "icon": "<emoji>",
+      "fields": [{"key": "<snake_case>", "label": "<Label>", "type": "<type>"}]
+    }
+  ]
+}
+If the app needs no persistent data, return empty arrays for both keys."""
+
+    source_lines = "\n".join(
+        f"- id: {s.id} | name: {s.name} | type: {s.type} | fields: {', '.join(f['key'] for f in s.fields)}"
+        for s in all_source_summaries
+    ) or "None"
+
+    user = f'App prompt: "{prompt}"\n\nUser\'s existing data sources:\n{source_lines}'
+
+    try:
+        raw = claude(system, user, max_tokens=1200)
+        data = json.loads(strip_fences(raw))
+        return SourcePlan(**data)
+    except Exception:
+        return SourcePlan()
+
+
 @app.post("/api/generate-app", response_model=GenerateAppResponse)
 def generate_app(req: GenerateAppRequest):
-    # Build data context
+    # Step 1: Plan sources (Haiku — fast, cheap)
+    source_plan = plan_sources(req.prompt, req.all_source_summaries)
+
+    # Force-include pinned sources that Claude's plan didn't select
+    planned_existing_ids = {ps.source_id for ps in source_plan.existing_sources}
+    for src_summary in req.all_source_summaries:
+        if src_summary.id in req.pinned_source_ids and src_summary.id not in planned_existing_ids:
+            source_plan.existing_sources.append(
+                PlannedExistingSource(source_id=src_summary.id, source_name=src_summary.name)
+            )
+
+    # Step 2: Build data context using the plan
+    sources_by_name = {s.name: s for s in req.sources}
+    all_planned: list[SourceData] = []
+
+    for ps in source_plan.existing_sources:
+        src = sources_by_name.get(ps.source_name)
+        if src:
+            all_planned.append(src)
+
+    for ns in source_plan.new_sources:
+        all_planned.append(SourceData(name=ns.name, type=ns.type, fields=ns.fields, records=[]))
+
     data_ctx = ""
-    if req.sources:
+    if all_planned:
         data_ctx = "\n\nUSER DATA (available as window.vibeDB at runtime):\n"
-        for src in req.sources:
+        for src in all_planned:
             data_ctx += f'\nSource: "{src.name}" (type: {src.type})\n'
             data_ctx += f"Fields: {', '.join(f['key']+':'+f['type'] for f in src.fields)}\n"
-            data_ctx += f"Records ({len(src.records)} total):\n"
-            data_ctx += json.dumps(src.records[:12], indent=2) + "\n"
+            if src.records:
+                data_ctx += f"Records ({len(src.records)} total):\n"
+                data_ctx += json.dumps(src.records[:12], indent=2) + "\n"
+            else:
+                data_ctx += "Records: (empty — will be populated as user adds data)\n"
 
-        first = req.sources[0].name
+        names = [s.name for s in all_planned]
         data_ctx += f"""
-window.vibeDB will be injected before the app loads:
+window.vibeDB will be injected before the app loads with these exact source keys: {names}
   window.vibeDB = {{ "Source Name": {{ fields: [...], records: [...] }} }}
 
 Reading data:
-  const data = window.vibeDB["{first}"]
+  const data = window.vibeDB["{names[0]}"]
   const records = data.records
 
 Writing back (syncs to the parent app's database):
-  window.parent.postMessage({{ type: 'vibeDB:write', sourceName: '{first}', records: updatedRecords }}, '*')
+  window.parent.postMessage({{ type: 'vibeDB:write', sourceName: '{names[0]}', records: updatedRecords }}, '*')
 
-If you need to persist data that isn't in a provided source, post it back using:
-  window.parent.postMessage({{ type: 'vibeDB:write', sourceName: '<appropriate-name>', records: [...] }}, '*')
-A new data source will be created automatically if one with that name doesn't exist yet.
+IMPORTANT: Use ONLY these exact source names when reading or writing: {names}
 """
 
     app_system = """You are a senior frontend developer building personal productivity apps.
@@ -191,6 +277,6 @@ Requirements:
             raise
         name = claude(name_system, f'App prompt: "{req.prompt}"', max_tokens=20).strip()
         narrator.interrupt()
-        return GenerateAppResponse(html=html, name=name)
+        return GenerateAppResponse(html=html, name=name, source_plan=source_plan)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

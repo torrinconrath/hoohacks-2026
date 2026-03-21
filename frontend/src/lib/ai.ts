@@ -1,4 +1,4 @@
-import type { Field } from '../types'
+import type { Field, SourcePlan } from '../types'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -20,7 +20,17 @@ export async function inferSchema(type: string, name: string, rawText: string): 
   return post('/api/infer-schema', { type, name, raw_text: rawText }) as Promise<{ fields: Field[]; records: Record<string, unknown>[] }>
 }
 
-// Returns { html: string, name: string }
-export async function generateApp(prompt: string, sources: unknown[]): Promise<{ html: string; name: string }> {
-  return post('/api/generate-app', { prompt, sources }) as Promise<{ html: string; name: string }>
+// Returns { html: string, name: string, source_plan: SourcePlan }
+export async function generateApp(
+  prompt: string,
+  sources: unknown[],
+  allSourceSummaries: unknown[],
+  pinnedSourceIds: string[] = [],
+): Promise<{ html: string; name: string; source_plan: SourcePlan }> {
+  return post('/api/generate-app', {
+    prompt,
+    sources,
+    all_source_summaries: allSourceSummaries,
+    pinned_source_ids: pinnedSourceIds,
+  }) as Promise<{ html: string; name: string; source_plan: SourcePlan }>
 }

@@ -31,13 +31,22 @@ interface BuildPageProps {
   updateSource: (id: string, updates: Partial<Source>) => Promise<Source>
 }
 
-export default function BuildPage({ sources, getRecords, apps, saveApp, deleteApp, activeAppId, onSelectApp, syncRecords, createSource, updateSource }: BuildPageProps) {
+export default function BuildPage({ sources, getRecords, apps, saveApp, deleteApp, activeAppId, onSelectApp, syncRecords, createSource }: BuildPageProps) {
   const [prompt, setPrompt]               = useState('')
   const [building, setBuilding]           = useState(false)
   const [error, setError]                 = useState('')
   const [progress, setProgress]           = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
+  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set())
   const frameRef = useRef<HTMLIFrameElement>(null)
+
+  function toggleSource(id: string) {
+    setSelectedSourceIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
   const activeApp = apps.find(a => a.id === activeAppId)
 
@@ -58,89 +67,63 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
             }))
           : []
         src = await createSource({ name: sourceName, type: 'custom', icon: '⚡', fields: inferredFields })
-      } else if (src.fields.length === 0 && records.length > 0) {
-        // Companion source has no fields yet — infer and update
-        const inferredFields: Field[] = Object.keys(records[0]).filter(k => k !== 'id').map(k => ({
-          key: k,
-          label: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-          type: inferFieldType(records[0][k]),
-        }))
-        await updateSource(src.id, { fields: inferredFields })
       }
       await syncRecords(src.id, records)
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [sources, syncRecords, createSource, updateSource])
-
-  // ── Detect relevant sources from prompt ───────────────────────────────────
-  function getRelevantSources(promptText: string): Source[] {
-    if (!sources.length) return []
-    const p = promptText.toLowerCase()
-    const kw: Record<string, string[]> = {
-      tasks:    ['task','todo','list','work','project','do','done','backlog','checklist'],
-      habits:   ['habit','streak','daily','routine','health','track','morning','check'],
-      finances: ['money','spend','budget','expense','finance','cost','income','saving','transaction','net worth'],
-      notes:    ['note','journal','write','thought','diary','entry','mood','log'],
-      calendar: ['event','calendar','schedule','upcoming','date','plan','meeting','appointment'],
-    }
-    return sources.filter(src => {
-      const words = kw[src.type] || []
-      return words.some(k => p.includes(k)) || p.includes(src.name.toLowerCase())
-    })
-  }
-
-  const relevantSources = getRelevantSources(prompt)
+  }, [sources, syncRecords, createSource])
 
   // ── Build ─────────────────────────────────────────────────────────────────
   async function handleBuild() {
     if (!prompt.trim()) return
-    setBuilding(true)
-    setError('')
-    setProgress(5)
-    setProgressLabel('Analyzing prompt…')
+    setBuilding(true); setError('')
+    setProgress(5); setProgressLabel('Planning data sources…')
 
     try {
-      // Fetch records for relevant sources
-      setProgress(20)
-      setProgressLabel('Loading your data…')
-
-      const sourcesWithRecords = await Promise.all(
-        relevantSources.map(async src => {
+      // Send ALL sources with records (backend plan step selects which to use)
+      setProgress(15); setProgressLabel('Loading your data…')
+      const allSourcesWithRecords = await Promise.all(
+        sources.map(async src => {
           const records = await getRecords(src.id)
           return { ...src, records: records.map(r => r.data) }
         })
       )
+      const allSourceSummaries = sources.map(({ id, name, type, fields }) => ({ id, name, type, fields }))
 
-      setProgress(40)
-      setProgressLabel('Generating app…')
-      const { html, name: appName } = await generateApp(prompt, sourcesWithRecords)
-      console.log(html);
+      setProgress(35); setProgressLabel('Generating app…')
+      const { html, name: appName, source_plan } = await generateApp(prompt, allSourcesWithRecords, allSourceSummaries, [...selectedSourceIds])
+      console.log(html)
       if (!html || !html.includes('<')) throw new Error('No valid app generated. Try rephrasing.')
 
-      setProgress(88)
-      setProgressLabel('Finishing up…')
+      setProgress(75); setProgressLabel('Creating data sources…')
 
-      // Create companion source for app-owned data
-      const companion = await createSource({ name: appName, type: 'custom', icon: '⚡', fields: [] })
+      // Create new sources declared by the plan
+      const createdSourceIds: string[] = []
+      for (const ns of source_plan.new_sources) {
+        const created = await createSource({ name: ns.name, type: ns.type, icon: ns.icon, fields: ns.fields })
+        createdSourceIds.push(created.id)
+      }
 
-      const app = await saveApp({
-        name: appName,
-        prompt,
-        html,
-        sourceIds: [...relevantSources.map(s => s.id), companion.id]
-      })
+      // Collect all source IDs: existing (from plan, validated) + newly created
+      const existingIds = source_plan.existing_sources
+        .map(e => e.source_id)
+        .filter(id => sources.some(s => s.id === id))
+      const allSourceIds = [...existingIds, ...createdSourceIds]
+
+      setProgress(90); setProgressLabel('Saving app…')
+      const app = await saveApp({ name: appName, prompt, html, sourceIds: allSourceIds })
 
       setProgress(100)
       setPrompt('')
+      setSelectedSourceIds(new Set())
       onSelectApp(app.id)
 
-    } catch(err) {
-        console.log(err);
+    } catch (err) {
+      console.log(err)
       setError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
-      setBuilding(false)
-      setProgress(0)
+      setBuilding(false); setProgress(0)
     }
   }
 
@@ -200,6 +183,27 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
 
           {error && <div style={styles.errorMsg}>{error}</div>}
 
+          {/* Source picker */}
+          {sources.length > 0 && (
+            <div style={styles.sourcePicker}>
+              <span style={styles.sourcePickerLabel}>Pin sources</span>
+              <div style={styles.sourcePickerBtns}>
+                {sources.map(src => {
+                  const selected = selectedSourceIds.has(src.id)
+                  return (
+                    <button
+                      key={src.id}
+                      style={{ ...styles.sourceBtn, ...(selected ? styles.sourceBtnActive : {}) }}
+                      onClick={() => toggleSource(src.id)}
+                    >
+                      {src.icon} {src.name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Prompt input */}
           <div style={styles.promptBox}>
             <textarea
@@ -212,13 +216,6 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
             />
             <div style={styles.promptFooter}>
               <span style={styles.promptHint}>⌘↵ to build</span>
-              {relevantSources.length > 0 && (
-                <div style={styles.pills}>
-                  {relevantSources.map(s => (
-                    <span key={s.id} style={styles.pill}>🗄️ {s.name}</span>
-                  ))}
-                </div>
-              )}
               <button style={{ ...styles.buildBtn, opacity: building ? 0.6 : 1 }} onClick={handleBuild} disabled={building}>
                 {building ? progressLabel : 'Build →'}
               </button>
@@ -314,11 +311,15 @@ const styles = {
   promptTextarea: { width: '100%', padding: '14px 16px 10px', background: 'none', border: 'none', outline: 'none', fontSize: 14.5, color: 'var(--text)', resize: 'none' as const, lineHeight: 1.65, caretColor: 'var(--accent)' },
   promptFooter: { display: 'flex', alignItems: 'center', padding: '8px 12px 10px', borderTop: '1px solid var(--border)', gap: 8 },
   promptHint: { fontSize: 11.5, color: 'var(--text3)', flexShrink: 0 },
-  pills: { display: 'flex', gap: 5, flex: 1, flexWrap: 'wrap' as const },
-  pill: { fontSize: 11, fontWeight: 500, padding: '3px 9px', borderRadius: 20, background: 'var(--accent-s)', color: 'var(--accent)', border: '1px solid rgba(124,106,245,0.2)' },
   buildBtn: { padding: '8px 20px', background: 'var(--accent)', color: 'white', border: 'none', borderRadius: 'var(--radius)', fontSize: 13.5, fontWeight: 500, cursor: 'pointer', flexShrink: 0, transition: 'all 0.15s' },
   progressTrack: { height: 2, background: 'var(--border)' },
   progressFill: { height: '100%', background: 'var(--accent)', transition: 'width 0.5s ease' },
+
+  sourcePicker: { marginBottom: 14 },
+  sourcePickerLabel: { fontSize: 11, fontWeight: 500, color: 'var(--text3)', textTransform: 'uppercase' as const, letterSpacing: '0.06em', display: 'block', marginBottom: 7 },
+  sourcePickerBtns: { display: 'flex', gap: 6, flexWrap: 'wrap' as const },
+  sourceBtn: { padding: '5px 11px', borderRadius: 20, border: '1px solid var(--border)', background: 'var(--bg2)', color: 'var(--text2)', fontSize: 12.5, cursor: 'pointer', transition: 'all 0.15s', fontWeight: 400 },
+  sourceBtnActive: { background: 'var(--accent-s)', border: '1px solid rgba(124,106,245,0.35)', color: 'var(--accent)', fontWeight: 500 },
 
   chips: { display: 'flex', gap: 7, flexWrap: 'wrap' as const },
   chip: { border: '1px solid var(--border)', background: 'var(--bg2)', color: 'var(--text2)', padding: '5px 13px', fontSize: 12.5, borderRadius: 20, cursor: 'pointer', transition: 'all 0.12s', fontFamily: "'Lora', serif", fontStyle: 'italic' as const },
