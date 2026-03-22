@@ -47,11 +47,24 @@ export function useApps(userId: string | undefined) {
     return data as App
   }
 
+  async function updateApp(id: string, updates: { html?: string; name?: string }) {
+    const { data, error } = await supabase
+      .from('apps')
+      .update(updates)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select()
+      .single()
+    if (error) throw error
+    setApps(prev => prev.map(a => a.id === id ? { ...a, ...data } : a))
+    return data as App
+  }
+
   async function deleteApp(id: string) {
     const { error } = await supabase.from('apps').delete().eq('id', id)
     if (error) throw error
     setApps(prev => prev.filter(a => a.id !== id))
   }
 
-  return { apps, loading, saveApp, deleteApp, refetch }
+  return { apps, loading, saveApp, updateApp, deleteApp, refetch }
 }
