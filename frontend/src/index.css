@@ -23,9 +23,9 @@ html, body, #root {
   --border2:   #3a362a;
 
   /* Text */
-  --text:      #e8e4d9;
-  --text2:     #a09880;
-  --text3:     #5a5448;
+  --text:      #f0ece2;
+  --text2:     #bab29e;
+  --text3:     #7a7060;
 
   /* Cursed energy accent — electric blue-violet */
   --accent:    #4fc3f7;
@@ -78,6 +78,7 @@ body::before {
 button { cursor: pointer; font-family: 'Rajdhani', sans-serif; letter-spacing: 0.04em; }
 input, textarea, select { font-family: 'Rajdhani', sans-serif; }
 a { color: inherit; text-decoration: none; }
+*:focus { outline: none; }
 
 /* Scrollbars */
 * {

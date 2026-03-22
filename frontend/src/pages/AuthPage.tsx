@@ -24,8 +24,8 @@ export default function AuthPage() {
     <div style={styles.wrap}>
       <div style={styles.card}>
         <div style={styles.icon}>✦</div>
-        <h1 style={styles.title}>Vibe</h1>
-        <p style={styles.sub}>Your personal data OS. Build apps around your life.</p>
+        <h1 style={styles.title}>Mugen</h1>
+        <p style={styles.sub}>Infinite possibilities. Connect your data, build anything you can imagine.</p>
 
         {sent ? (
           <div style={styles.sent}>
