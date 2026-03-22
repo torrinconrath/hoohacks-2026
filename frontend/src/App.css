@@ -1,60 +1,29 @@
+/* ──  App.css ─────────────────────────────────────────────────── */
+
 .counter {
-  font-size: 16px;
-  padding: 5px 10px;
-  border-radius: 5px;
+  font-size: 14px;
+  padding: 5px 12px;
+  border-radius: 3px;
   color: var(--accent);
-  background: var(--accent-bg);
-  border: 2px solid transparent;
-  transition: border-color 0.3s;
+  background: var(--accent-s);
+  border: 1px solid rgba(79,195,247,0.2);
+  transition: all 0.2s;
   margin-bottom: 24px;
+  font-family: 'Space Mono', monospace;
+  letter-spacing: 0.08em;
 
   &:hover {
-    border-color: var(--accent-border);
+    border-color: var(--accent);
+    box-shadow: var(--glow-sm);
   }
   &:focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 1px solid var(--accent);
     outline-offset: 2px;
+    box-shadow: var(--glow-sm);
   }
 }
 
-.hero {
-  position: relative;
-
-  .base,
-  .framework,
-  .vite {
-    inset-inline: 0;
-    margin: 0 auto;
-  }
-
-  .base {
-    width: 170px;
-    position: relative;
-    z-index: 0;
-  }
-
-  .framework,
-  .vite {
-    position: absolute;
-  }
-
-  .framework {
-    z-index: 1;
-    top: 34px;
-    height: 28px;
-    transform: perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg)
-      scale(1.4);
-  }
-
-  .vite {
-    z-index: 0;
-    top: 107px;
-    height: 26px;
-    width: auto;
-    transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
-      scale(0.8);
-  }
-}
+/* ── Structural layout ───────────────────────────────────────────────────── */
 
 #center {
   display: flex;
@@ -116,23 +85,29 @@
   }
 
   a {
-    color: var(--text-h);
-    font-size: 16px;
-    border-radius: 6px;
-    background: var(--social-bg);
+    color: var(--text);
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    border-radius: 3px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
     display: flex;
     padding: 6px 12px;
     align-items: center;
     gap: 8px;
     text-decoration: none;
-    transition: box-shadow 0.3s;
+    transition: all 0.2s;
+    text-transform: uppercase;
 
     &:hover {
-      box-shadow: var(--shadow);
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: var(--glow-sm);
     }
+
     .button-icon {
-      height: 18px;
-      width: 18px;
+      height: 16px;
+      width: 16px;
     }
   }
 
@@ -175,10 +150,12 @@
 
   &::before {
     left: 0;
-    border-left-color: var(--border);
+    border-left-color: var(--accent);
+    filter: drop-shadow(0 0 4px var(--accent));
   }
   &::after {
     right: 0;
-    border-right-color: var(--border);
+    border-right-color: var(--accent);
+    filter: drop-shadow(0 0 4px var(--accent));
   }
 }
