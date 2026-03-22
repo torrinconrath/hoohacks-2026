@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { generateApp, editApp } from '../lib/ai'
-import type { Source, AppRecord, App, Field } from '../types'
+import { generateAppStream, editAppStream } from '../lib/ai'
+import type { Source, AppRecord, App, Field, SourcePlan } from '../types'
 import deliriousSrc from '../assets/Delirious.mp3'
 
 function inferFieldType(v: unknown): string {
@@ -97,6 +97,33 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
       bgmRef.current.play().catch(() => {})
     }
 
+    // Web Audio context for streaming narration playback
+    // Use object wrapper so TypeScript tracks mutations across the closure
+    const audio: { ctx: AudioContext | null; nextPlayTime: number } = { ctx: null, nextPlayTime: 0 }
+
+    function scheduleAudioChunk(base64pcm: string) {
+      try {
+        if (!audio.ctx) {
+          audio.ctx = new AudioContext({ sampleRate: 22050 })
+          audio.nextPlayTime = audio.ctx.currentTime
+        }
+        const binary = atob(base64pcm)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        const int16 = new Int16Array(bytes.buffer)
+        const float32 = new Float32Array(int16.length)
+        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0
+        const buf = audio.ctx.createBuffer(1, float32.length, 22050)
+        buf.copyToChannel(float32, 0)
+        const source = audio.ctx.createBufferSource()
+        source.buffer = buf
+        source.connect(audio.ctx.destination)
+        const startTime = Math.max(audio.ctx.currentTime, audio.nextPlayTime)
+        source.start(startTime)
+        audio.nextPlayTime = startTime + buf.duration
+      } catch { /* audio errors are non-fatal */ }
+    }
+
     try {
       // Send ALL sources with records (backend plan step selects which to use)
       setProgress(15); setProgressLabel('Loading your data…')
@@ -109,7 +136,23 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
       const allSourceSummaries = sources.map(({ id, name, type, fields }) => ({ id, name, type, fields }))
 
       setProgress(35); setProgressLabel('Generating app…')
-      const { html, name: appName, source_plan } = await generateApp(prompt, allSourcesWithRecords, allSourceSummaries, [...selectedSourceIds])
+
+      let html = ''
+      let appName = ''
+      let source_plan: SourcePlan = { existing_sources: [], new_sources: [] }
+
+      for await (const event of generateAppStream(prompt, allSourcesWithRecords, allSourceSummaries, [...selectedSourceIds])) {
+        if (event.type === 'audio') {
+          scheduleAudioChunk(event.data)
+        } else if (event.type === 'result') {
+          html = event.html
+          appName = event.name
+          source_plan = event.source_plan
+        } else if (event.type === 'error') {
+          throw new Error(event.detail)
+        }
+      }
+
       console.log(html)
       if (!html || !html.includes('<')) throw new Error('No valid app generated. Try rephrasing.')
 
@@ -144,6 +187,7 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
         bgmRef.current.pause()
         bgmRef.current.currentTime = 0
       }
+      audio.ctx?.close()
       setBuilding(false); setProgress(0)
     }
   }
@@ -159,6 +203,30 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
       bgmRef.current.play().catch(() => {})
     }
 
+    const audio: { ctx: AudioContext | null; nextPlayTime: number } = { ctx: null, nextPlayTime: 0 }
+    function scheduleEditAudio(base64pcm: string) {
+      try {
+        if (!audio.ctx) {
+          audio.ctx = new AudioContext({ sampleRate: 22050 })
+          audio.nextPlayTime = audio.ctx.currentTime
+        }
+        const binary = atob(base64pcm)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        const int16 = new Int16Array(bytes.buffer)
+        const float32 = new Float32Array(int16.length)
+        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0
+        const buf = audio.ctx.createBuffer(1, float32.length, 22050)
+        buf.copyToChannel(float32, 0)
+        const source = audio.ctx.createBufferSource()
+        source.buffer = buf
+        source.connect(audio.ctx.destination)
+        const startTime = Math.max(audio.ctx.currentTime, audio.nextPlayTime)
+        source.start(startTime)
+        audio.nextPlayTime = startTime + buf.duration
+      } catch { /* non-fatal */ }
+    }
+
     try {
       const linkedSources = sources.filter(s => activeApp.source_ids?.includes(s.id))
       const sourcesWithRecords = await Promise.all(
@@ -169,7 +237,21 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
       )
 
       setEditProgress(30); setEditProgressLabel('Editing app…')
-      const { html, schema_updates } = await editApp(editPrompt, activeApp.html, sourcesWithRecords)
+
+      let html = ''
+      let schema_updates: { source_id: string; source_name: string; fields: Field[] }[] = []
+
+      for await (const event of editAppStream(editPrompt, activeApp.html, sourcesWithRecords)) {
+        if (event.type === 'audio') {
+          scheduleEditAudio(event.data)
+        } else if (event.type === 'result') {
+          html = event.html
+          schema_updates = event.schema_updates
+        } else if (event.type === 'error') {
+          throw new Error(event.detail)
+        }
+      }
+
       if (!html || !html.includes('<')) throw new Error('Edit failed. Try rephrasing.')
 
       setEditProgress(80); setEditProgressLabel('Applying changes…')
@@ -187,6 +269,7 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
       setEditError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
       setEditing(false); setEditProgress(0)
+      audio.ctx?.close()
       if (bgmRef.current) {
         bgmRef.current.pause()
         bgmRef.current.currentTime = 0

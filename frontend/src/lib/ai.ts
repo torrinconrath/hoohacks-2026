@@ -39,6 +39,45 @@ export async function editApp(
   }) as Promise<{ html: string; schema_updates: SchemaUpdate[] }>
 }
 
+export type EditStreamEvent =
+  | { type: 'audio'; data: string }
+  | { type: 'result'; html: string; schema_updates: SchemaUpdate[] }
+  | { type: 'error'; detail: string }
+
+export async function* editAppStream(
+  prompt: string,
+  currentHtml: string,
+  sources: unknown[],
+): AsyncGenerator<EditStreamEvent> {
+  const res = await fetch(`${API}/api/edit-app-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, current_html: currentHtml, sources }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { detail?: string }
+    throw new Error(err.detail || `API error ${res.status}`)
+  }
+
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6).trim()
+      if (data === '[DONE]') return
+      try { yield JSON.parse(data) } catch { /* skip malformed */ }
+    }
+  }
+}
+
 // Returns { html: string, name: string, source_plan: SourcePlan }
 export async function generateApp(
   prompt: string,
@@ -52,4 +91,50 @@ export async function generateApp(
     all_source_summaries: allSourceSummaries,
     pinned_source_ids: pinnedSourceIds,
   }) as Promise<{ html: string; name: string; source_plan: SourcePlan }>
+}
+
+export type StreamEvent =
+  | { type: 'audio'; data: string }
+  | { type: 'result'; html: string; name: string; source_plan: SourcePlan }
+  | { type: 'error'; detail: string }
+
+// Streams narration audio + final result via SSE
+export async function* generateAppStream(
+  prompt: string,
+  sources: unknown[],
+  allSourceSummaries: unknown[],
+  pinnedSourceIds: string[] = [],
+): AsyncGenerator<StreamEvent> {
+  const res = await fetch(`${API}/api/generate-app-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt,
+      sources,
+      all_source_summaries: allSourceSummaries,
+      pinned_source_ids: pinnedSourceIds,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { detail?: string }
+    throw new Error(err.detail || `API error ${res.status}`)
+  }
+
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6).trim()
+      if (data === '[DONE]') return
+      try { yield JSON.parse(data) } catch { /* skip malformed */ }
+    }
+  }
 }

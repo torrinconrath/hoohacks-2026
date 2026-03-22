@@ -26,7 +26,12 @@ import queue
 import threading
 
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+    _SOUNDDEVICE_AVAILABLE = True
+except OSError:
+    sd = None  # type: ignore
+    _SOUNDDEVICE_AVAILABLE = False
 import anthropic
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
@@ -101,8 +106,8 @@ def refactor_chunk(
     return response.content[0].text.strip()
 
 
-def _speak(el: ElevenLabs, text: str) -> None:
-    """Fetch narration as raw PCM from ElevenLabs and play via sounddevice."""
+def _speak(el: ElevenLabs, text: str) -> bytes:
+    """Fetch narration as raw PCM from ElevenLabs. Returns raw int16 PCM bytes."""
     chunks = el.text_to_speech.convert_as_stream(
         text=text,
         voice_id=ELEVENLABS_VOICE_ID,
@@ -116,10 +121,12 @@ def _speak(el: ElevenLabs, text: str) -> None:
         )
     )
     audio_bytes = b"".join(chunks)
-    audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-    audio_np = np.clip(audio_np * 1.7, -1.0, 1.0)  # TTS volume multiplier (2.0 = 2x louder)
-    sd.play(audio_np, samplerate=ELEVENLABS_SAMPLE_RATE)
-    sd.wait()
+    if _SOUNDDEVICE_AVAILABLE:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        audio_np = np.clip(audio_np * 1.7, -1.0, 1.0)
+        sd.play(audio_np, samplerate=ELEVENLABS_SAMPLE_RATE)
+        sd.wait()
+    return audio_bytes
 
 
 # ─── WORKER THREAD ────────────────────────────────────────────────────────────
@@ -128,13 +135,16 @@ def _narrator_worker(
     anthropic_client: anthropic.Anthropic,
     el: ElevenLabs | None,
     thinking_q: queue.Queue,
+    output_q: queue.Queue | None = None,
+    done_event: threading.Event | None = None,
 ) -> None:
     """
-    thinking_q  ->  boundary-aware batch  ->  refactor (Haiku)  ->  ElevenLabs  ->  speakers
+    thinking_q  ->  boundary-aware batch  ->  refactor (Haiku)  ->  ElevenLabs  ->  speakers / output_q
 
     Flushes at paragraph or sentence boundaries once CHUNK_MIN_CHARS is reached.
     Receives None as sentinel to flush the remaining buffer and stop.
     """
+    import base64
     buffer            = ""
     recent: list[str] = []
 
@@ -147,7 +157,9 @@ def _narrator_worker(
             if len(recent) > 6:
                 recent.pop(0)
             print(f"[narrator] {narration}")
-            _speak(el, narration)
+            audio_bytes = _speak(el, narration)
+            if output_q is not None and audio_bytes:
+                output_q.put({"type": "audio", "data": base64.b64encode(audio_bytes).decode()})
         except Exception as exc:
             print(f"[narrator] error: {exc}")
 
@@ -182,6 +194,8 @@ def _narrator_worker(
 
         if chunk is None:           # sentinel — stream finished
             flush(buffer)
+            if done_event is not None:
+                done_event.set()
             return
 
         buffer += chunk
@@ -203,20 +217,27 @@ class AppNarrator:
         self._el = ElevenLabs(api_key=el_key) if el_key else None
         if not el_key:
             print("[narrator] ELEVENLABS_API_KEY not set — TTS disabled")
-        self._lock     = threading.Lock()
-        self._think_q: queue.Queue | None       = None
-        self._worker_t: threading.Thread | None = None
+        self._lock       = threading.Lock()
+        self._think_q:   queue.Queue | None       = None
+        self._worker_t:  threading.Thread | None  = None
+        self._done_event: threading.Event | None  = None
 
-    def start_session(self) -> None:
+    def start_session(self, output_q: queue.Queue | None = None) -> None:
         if not self._lock.acquire(timeout=30):
             raise RuntimeError("Narrator busy — previous session still draining")
-        self._think_q  = queue.Queue()
-        self._worker_t = threading.Thread(
+        self._think_q   = queue.Queue()
+        self._done_event = threading.Event()
+        self._worker_t  = threading.Thread(
             target=_narrator_worker,
-            args=(self._anthropic, self._el, self._think_q),
+            args=(self._anthropic, self._el, self._think_q, output_q, self._done_event),
             daemon=True,
         )
         self._worker_t.start()
+
+    def join(self, timeout: float = 8) -> None:
+        """Wait for the narrator worker to finish draining (up to timeout seconds)."""
+        if self._done_event is not None:
+            self._done_event.wait(timeout=timeout)
 
     def feed(self, thinking_chunk: str) -> None:
         """Feed a raw thinking delta into the pipeline."""
@@ -237,7 +258,8 @@ class AppNarrator:
 
     def interrupt(self) -> None:
         """Cut off TTS immediately."""
-        sd.stop()
+        if _SOUNDDEVICE_AVAILABLE:
+            sd.stop()
         if self._think_q is not None:
             while not self._think_q.empty():
                 try:
