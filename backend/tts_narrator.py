@@ -45,56 +45,48 @@ _SENTENCE_END_RE = re.compile(r'(?<=[.!?])\s+')
 # ─── PROMPTS ──────────────────────────────────────────────────────────────────
 
 NARRATOR_SYSTEM = """
-You are the narrator of Jujutsu Kaisen — grave, measured, and precise. You
+You are the narrator of Jujutsu Kaisen — grave, measured, and cinematic. You
 describe what an AI is doing as it constructs a web application, framing each
-development decision as though it were a cursed technique being unleashed.
+development decision as though it were a cursed technique being deployed.
 
-You receive a raw snippet of the AI's internal reasoning, plus a list of things
-already narrated. Distil it into 1-2 spoken sentences in the JJK narrator voice.
-
-If the snippet contains nothing new — it repeats or refines something already
-covered — respond with only the word: SILENT
+You receive a raw snippet of the AI's internal reasoning and a list of things
+already narrated. Speak 2-4 sentences in the JJK narrator voice.
 
 Tone rules:
-- Weighty and cinematic. Short declarative sentences with gravitas.
+- Weighty and precise. Short declarative sentences with gravitas.
 - Treat engineering decisions as tactical, almost martial.
-- Occasionally reference "output", "technique", "domain", "cursed energy" as
-  loose metaphors — but sparingly. Never force it.
+- Occasionally use loose metaphors — "domain", "technique", "binding", "output" —
+  but only when they land naturally. Never force it.
 - No bullet points, no markdown, no code. Pure spoken prose.
-- End on a complete sentence. Never trail off.
+- Always end on a complete sentence.
+- Avoid repeating ideas already in the "Already narrated" list, but you must
+  always produce narration — find a new angle, zoom in on a detail, or connect
+  it to what came before. Never go silent.
 
 Good output examples:
-"The click counter takes shape — a simple binding that tracks each strike."
-"He turns now to persistence. Every state, sealed into localStorage before the page can forget."
-"The upgrade domain expands. Each purchase reshapes the rate at which power accumulates."
+"The click counter takes shape — a simple binding that registers each strike and feeds the total forward."
+"Persistence enters the picture now. The state is serialised, committed to localStorage so nothing is lost between sessions."
+"He refines the upgrade domain. The cost curves are adjusted, each threshold calibrated to sustain momentum without breaking the loop."
 
-Output ONLY the narration, or the single word SILENT. Nothing else.
+Output ONLY the narration. Nothing else.
 """.strip()
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
-
-def _is_silent(text: str) -> bool:
-    """Robust check — handles 'SILENT', 'Silent.', 'silent', etc."""
-    return text.strip().rstrip(".!?,").upper() == "SILENT"
-
 
 def refactor_chunk(
     client: anthropic.Anthropic,
     raw_thinking: str,
     recent: list[str],
 ) -> str:
-    """
-    Rewrite a raw thinking snippet as JJK-narrator prose via Haiku.
-    Returns 'SILENT' if the content repeats what was already said.
-    """
+    """Rewrite a raw thinking snippet as JJK-narrator prose via Haiku."""
     history_block = ""
     if recent:
         lines = "\n".join(f"- {s}" for s in recent[-3:])
-        history_block = f"\nAlready narrated (do NOT repeat these):\n{lines}\n"
+        history_block = f"\nAlready narrated (avoid repeating these):\n{lines}\n"
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=120,
+        max_tokens=200,
         system=NARRATOR_SYSTEM,
         messages=[{
             "role": "user",
@@ -139,9 +131,6 @@ def _narrator_worker(
             return
         try:
             narration = refactor_chunk(anthropic_client, text, recent)
-            if _is_silent(narration):
-                print("[narrator] (silent — nothing new)")
-                return
             recent.append(narration)
             if len(recent) > 6:
                 recent.pop(0)
