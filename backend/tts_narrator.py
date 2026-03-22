@@ -29,6 +29,7 @@ import numpy as np
 import sounddevice as sd
 import anthropic
 from elevenlabs.client import ElevenLabs
+from elevenlabs import VoiceSettings
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
@@ -55,18 +56,22 @@ already narrated. Speak 2-4 sentences in the JJK narrator voice.
 Tone rules:
 - Weighty and precise. Short declarative sentences with gravitas.
 - Treat engineering decisions as tactical, almost martial.
-- Occasionally use loose metaphors — "domain", "technique", "binding", "output" —
-  but only when they land naturally. Never force it.
+- Occasionally use loose metaphors — "domain", "cursed technique", "binding", "output"
 - No bullet points, no markdown, no code. Pure spoken prose.
 - Always end on a complete sentence.
 - Avoid repeating ideas already in the "Already narrated" list, but you must
   always produce narration — find a new angle, zoom in on a detail, or connect
   it to what came before. Never go silent.
 
-Good output examples:
-"The click counter takes shape — a simple binding that registers each strike and feeds the total forward."
-"Persistence enters the picture now. The state is serialised, committed to localStorage so nothing is lost between sessions."
-"He refines the upgrade domain. The cost curves are adjusted, each threshold calibrated to sustain momentum without breaking the loop."
+JJK Vocab to use:
+ - "Domain Expansion"
+ - "Cursed technique"
+ - "Gojo Satoru"
+ - "Cursed Energy"
+ - "Black Flash"
+ Explain the features being added like they are an ability or technique in the JJK universe.
+
+
 
 Output ONLY the narration. Nothing else.
 """.strip()
@@ -103,9 +108,16 @@ def _speak(el: ElevenLabs, text: str) -> None:
         voice_id=ELEVENLABS_VOICE_ID,
         model_id=ELEVENLABS_MODEL,
         output_format=ELEVENLABS_OUTPUT_FORMAT,
+        voice_settings=VoiceSettings(
+            stability=0.35,
+            similarity_boost=0.40,
+            style=0.70,
+            use_speaker_boost=True
+        )
     )
     audio_bytes = b"".join(chunks)
-    audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+    audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    audio_np = np.clip(audio_np * 1.7, -1.0, 1.0)  # TTS volume multiplier (2.0 = 2x louder)
     sd.play(audio_np, samplerate=ELEVENLABS_SAMPLE_RATE)
     sd.wait()
 

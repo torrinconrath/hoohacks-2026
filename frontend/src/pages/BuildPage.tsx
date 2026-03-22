@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { generateApp, editApp } from '../lib/ai'
 import type { Source, AppRecord, App, Field } from '../types'
+import deliriousSrc from '../assets/Delirious.mp3'
 
 function inferFieldType(v: unknown): string {
   if (typeof v === 'boolean') return 'boolean'
@@ -46,6 +47,7 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
   const [editProgress, setEditProgress]           = useState(0)
   const [editProgressLabel, setEditProgressLabel] = useState('')
   const frameRef = useRef<HTMLIFrameElement>(null)
+  const bgmRef = useRef<HTMLAudioElement>(null)
 
   // Reset edit bar when switching apps
   useEffect(() => { setEditOpen(false); setEditPrompt(''); setEditError('') }, [activeAppId])
@@ -89,6 +91,11 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
     if (!prompt.trim()) return
     setBuilding(true); setError('')
     setProgress(5); setProgressLabel('Planning data sources…')
+    if (bgmRef.current) {
+      bgmRef.current.currentTime = 0
+      bgmRef.current.volume = 0.2
+      bgmRef.current.play().catch(() => {})
+    }
 
     try {
       // Send ALL sources with records (backend plan step selects which to use)
@@ -133,6 +140,10 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
       console.log(err)
       setError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
+      if (bgmRef.current) {
+        bgmRef.current.pause()
+        bgmRef.current.currentTime = 0
+      }
       setBuilding(false); setProgress(0)
     }
   }
@@ -200,6 +211,7 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
 
   return (
     <div style={styles.wrap}>
+      <audio ref={bgmRef} src={deliriousSrc} loop preload="auto" />
 
       {/* ── Builder / Library panel ─────────────────────────────── */}
       <div style={{ ...styles.builderPanel, display: activeApp ? 'none' : 'flex' }}>
