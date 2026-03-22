@@ -2,10 +2,17 @@ import type { Field, SourcePlan } from '../types'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+function getHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const key = localStorage.getItem('vibe_anthropic_key')
+  if (key) headers['X-Anthropic-Key'] = key
+  return headers
+}
+
 async function post(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${API}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify(body),
   })
   if (!res.ok) {
@@ -39,7 +46,7 @@ export async function* editAppStream(
 ): AsyncGenerator<EditStreamEvent> {
   const res = await fetch(`${API}/api/edit-app-stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ prompt, current_html: currentHtml, sources }),
   })
   if (!res.ok) {
@@ -81,7 +88,7 @@ export async function* generateAppStream(
 ): AsyncGenerator<StreamEvent> {
   const res = await fetch(`${API}/api/generate-app-stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({
       prompt,
       sources,

@@ -4,7 +4,7 @@ import queue
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -16,9 +16,24 @@ from tts_narrator import AppNarrator, generate_app_with_narration
 load_dotenv()
 
 # ── Anthropic client ──────────────────────────────────────────────────────────
-client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+# Global fallback client (used only if ANTHROPIC_API_KEY env var is set, e.g. local dev)
+_env_api_key = os.getenv("ANTHROPIC_API_KEY")
+_fallback_client = anthropic.Anthropic(api_key=_env_api_key) if _env_api_key else None
 MODEL       = "claude-sonnet-4-5"
 MODEL_FAST  = "claude-haiku-4-5-20251001"   # non-thinking, simple tasks
+
+
+def get_client(request: Request) -> anthropic.Anthropic:
+    """Return an Anthropic client using the per-request API key header, falling back to env var."""
+    key = request.headers.get("X-Anthropic-Key", "").strip()
+    if key:
+        return anthropic.Anthropic(api_key=key)
+    if _fallback_client is not None:
+        return _fallback_client
+    raise HTTPException(
+        status_code=400,
+        detail="Anthropic API key required. Add yours in Settings."
+    )
 
 # ── Narrator ──────────────────────────────────────────────────────────────────
 narrator = AppNarrator()
@@ -40,7 +55,7 @@ app.add_middleware(
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def claude(system: str, user: str, max_tokens: int = 2000, model: str = MODEL_FAST) -> str:
+def claude(client: anthropic.Anthropic, system: str, user: str, max_tokens: int = 2000, model: str = MODEL_FAST) -> str:
     msg = client.messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -124,7 +139,8 @@ def health():
 
 
 @app.post("/api/infer-schema", response_model=InferSchemaResponse)
-def infer_schema(req: InferSchemaRequest):
+def infer_schema(req: InferSchemaRequest, request: Request):
+    c = get_client(request)
     system = """You are a data structuring AI. Convert raw personal data into structured JSON.
 Return ONLY valid JSON — no markdown fences, no explanation:
 {
@@ -150,7 +166,7 @@ Parse ALL items from the input. Be thorough."""
     user = f"Type: {req.type}\nName: {req.name}\n\nRaw data:\n{req.raw_text}"
 
     try:
-        raw = claude(system, user, max_tokens=3000)
+        raw = claude(c, system, user, max_tokens=3000)
         data = json.loads(strip_fences(raw))
         return InferSchemaResponse(**data)
     except json.JSONDecodeError as e:
@@ -159,7 +175,7 @@ Parse ALL items from the input. Be thorough."""
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def plan_sources(prompt: str, all_source_summaries: list[ExistingSourceSummary], pinned_source_ids: list[str] = []) -> SourcePlan:
+def plan_sources(client: anthropic.Anthropic, prompt: str, all_source_summaries: list[ExistingSourceSummary], pinned_source_ids: list[str] = []) -> SourcePlan:
     tools = [
         {
             "name": "link_existing_source",
@@ -256,13 +272,14 @@ RULES (follow exactly):
 
 
 @app.post("/api/generate-app-stream")
-def generate_app_stream(req: GenerateAppRequest):
+def generate_app_stream(req: GenerateAppRequest, request: Request):
     """Same as generate-app but streams narration audio chunks as SSE before the final result."""
+    c = get_client(request)
     event_q: queue.Queue = queue.Queue()
 
     def worker():
         try:
-            source_plan = plan_sources(req.prompt, req.all_source_summaries, req.pinned_source_ids)
+            source_plan = plan_sources(c, req.prompt, req.all_source_summaries, req.pinned_source_ids)
 
             sources_by_name = {s.name: s for s in req.sources}
             all_planned: list[SourceData] = []
@@ -331,11 +348,11 @@ Design requirements:
 
             name_system = "Generate a short 2-4 word app name. Reply with ONLY the name, no punctuation, no quotes."
 
-            narrator.start_session(output_q=event_q)
+            narrator.start_session(output_q=event_q, anthropic_client=c)
             try:
                 html = strip_fences(
                     generate_app_with_narration(
-                        client=client,
+                        client=c,
                         model=MODEL,
                         app_system=app_system,
                         user_prompt=f"Build: {req.prompt}{data_ctx}",
@@ -347,7 +364,7 @@ Design requirements:
                 narrator.end_thinking()
                 raise
 
-            name = claude(name_system, f'App prompt: "{req.prompt}"', max_tokens=20).strip()
+            name = claude(c, name_system, f'App prompt: "{req.prompt}"', max_tokens=20).strip()
             narrator.join(timeout=8)   # wait for remaining audio chunks
             narrator.interrupt()
             event_q.put({"type": "result", "html": html, "name": name, "source_plan": source_plan.model_dump()})
@@ -373,7 +390,7 @@ Design requirements:
     )
 
 
-def plan_schema_updates(edit_prompt: str, sources: list[SourceData]) -> list[SchemaUpdate]:
+def plan_schema_updates(client: anthropic.Anthropic, edit_prompt: str, sources: list[SourceData]) -> list[SchemaUpdate]:
     if not sources:
         return []
 
@@ -435,13 +452,14 @@ RULES:
 
 
 @app.post("/api/edit-app-stream")
-def edit_app_stream(req: EditAppRequest):
+def edit_app_stream(req: EditAppRequest, request: Request):
     """Same as edit-app but streams narration audio chunks as SSE before the final result."""
+    c = get_client(request)
     event_q: queue.Queue = queue.Queue()
 
     def worker():
         try:
-            schema_updates = plan_schema_updates(req.prompt, req.sources)
+            schema_updates = plan_schema_updates(c, req.prompt, req.sources)
 
             data_ctx = ""
             if req.sources:
@@ -468,11 +486,11 @@ Rules:
 - Write changes back via: window.parent.postMessage({ type: 'vibeDB:write', sourceName, records }, '*')
 - If schema changes are listed above, update the app to use the new fields."""
 
-            narrator.start_session(output_q=event_q)
+            narrator.start_session(output_q=event_q, anthropic_client=c)
             try:
                 html = strip_fences(
                     generate_app_with_narration(
-                        client=client,
+                        client=c,
                         model=MODEL,
                         app_system=edit_system,
                         user_prompt=f"Current app HTML:\n{req.current_html}\n\nEdit request: {req.prompt}{data_ctx}",
