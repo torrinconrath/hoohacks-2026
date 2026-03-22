@@ -1,19 +1,13 @@
 """
 tts_narrator.py
 ───────────────
-Concurrent TTS narrator for the Vibe API app generation pipeline.
-Uses ElevenLabs streaming TTS — no local model files required.
+Concurrent TTS narrator for the Mugen API app generation pipeline.
+Uses ElevenLabs streaming TTS — streams audio bytes to the browser via SSE.
 
-While /api/generate-app streams Claude's extended thinking, this module:
+While /api/generate-app-stream streams Claude's extended thinking, this module:
   1. Receives raw thinking chunks via a thread-safe queue
   2. Batches and refactors each chunk into natural spoken narration (Haiku call)
-  3. Streams the narration to ElevenLabs and plays it back in a background thread
-
-Fully non-blocking — the HTTP response returns as soon as HTML is ready.
-TTS finishes draining in the background.
-
-Install:
-    pip install elevenlabs anthropic python-dotenv
+  3. Fetches audio from ElevenLabs and puts base64 PCM chunks into an output queue
 
 Set env vars:
     ANTHROPIC_API_KEY=...
@@ -25,13 +19,6 @@ import re
 import queue
 import threading
 
-import numpy as np
-try:
-    import sounddevice as sd
-    _SOUNDDEVICE_AVAILABLE = True
-except OSError:
-    sd = None  # type: ignore
-    _SOUNDDEVICE_AVAILABLE = False
 import anthropic
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
@@ -107,7 +94,7 @@ def refactor_chunk(
 
 
 def _speak(el: ElevenLabs, text: str) -> bytes:
-    """Fetch narration as raw PCM from ElevenLabs. Returns raw int16 PCM bytes."""
+    """Fetch narration as raw int16 PCM from ElevenLabs and return the bytes."""
     chunks = el.text_to_speech.convert_as_stream(
         text=text,
         voice_id=ELEVENLABS_VOICE_ID,
@@ -120,13 +107,7 @@ def _speak(el: ElevenLabs, text: str) -> bytes:
             use_speaker_boost=True
         )
     )
-    audio_bytes = b"".join(chunks)
-    if _SOUNDDEVICE_AVAILABLE:
-        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        audio_np = np.clip(audio_np * 1.7, -1.0, 1.0)
-        sd.play(audio_np, samplerate=ELEVENLABS_SAMPLE_RATE)
-        sd.wait()
-    return audio_bytes
+    return b"".join(chunks)
 
 
 # ─── WORKER THREAD ────────────────────────────────────────────────────────────
@@ -257,9 +238,7 @@ class AppNarrator:
         threading.Thread(target=_drain, daemon=True).start()
 
     def interrupt(self) -> None:
-        """Cut off TTS immediately."""
-        if _SOUNDDEVICE_AVAILABLE:
-            sd.stop()
+        """Clear the thinking queue to stop further narration processing."""
         if self._think_q is not None:
             while not self._think_q.empty():
                 try:

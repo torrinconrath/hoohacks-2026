@@ -110,20 +110,11 @@ class EditAppRequest(BaseModel):
     current_html: str
     sources: list[SourceData] = []
 
-class EditAppResponse(BaseModel):
-    html: str
-    schema_updates: list[SchemaUpdate] = []
-
 class GenerateAppRequest(BaseModel):
     prompt: str
     sources: list[SourceData] = []
     all_source_summaries: list[ExistingSourceSummary] = []
     pinned_source_ids: list[str] = []
-
-class GenerateAppResponse(BaseModel):
-    html: str
-    name: str
-    source_plan: SourcePlan
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -262,105 +253,6 @@ RULES (follow exactly):
 
     except Exception:
         return SourcePlan()
-
-
-@app.post("/api/generate-app", response_model=GenerateAppResponse)
-def generate_app(req: GenerateAppRequest):
-    # Step 1: Plan sources (Haiku with tool calls — fast, reliable)
-    source_plan = plan_sources(req.prompt, req.all_source_summaries, req.pinned_source_ids)
-
-    # Step 2: Build data context using the plan
-    sources_by_name = {s.name: s for s in req.sources}
-    all_planned: list[SourceData] = []
-
-    for ps in source_plan.existing_sources:
-        src = sources_by_name.get(ps.source_name)
-        if src:
-            all_planned.append(src)
-
-    for ns in source_plan.new_sources:
-        all_planned.append(SourceData(name=ns.name, type=ns.type, fields=ns.fields, records=[]))
-
-    data_ctx = ""
-    if all_planned:
-        data_ctx = "\n\nUSER DATA (available as window.vibeDB at runtime):\n"
-        for src in all_planned:
-            data_ctx += f'\nSource: "{src.name}" (type: {src.type})\n'
-            data_ctx += f"Fields: {', '.join(f['key']+':'+f['type'] for f in src.fields)}\n"
-            if src.records:
-                data_ctx += f"Records ({len(src.records)} total):\n"
-                data_ctx += json.dumps(src.records[:12], indent=2) + "\n"
-            else:
-                data_ctx += "Records: (empty — will be populated as user adds data)\n"
-
-        names = [s.name for s in all_planned]
-        data_ctx += f"""
-window.vibeDB will be injected before the app loads with these exact source keys: {names}
-  window.vibeDB = {{ "Source Name": {{ fields: [...], records: [...] }} }}
-
-Reading data:
-  const data = window.vibeDB["{names[0]}"]
-  const records = data.records
-
-Writing back (syncs to the parent app's database):
-  window.parent.postMessage({{ type: 'vibeDB:write', sourceName: '{names[0]}', records: updatedRecords }}, '*')
-
-IMPORTANT: Use ONLY these exact source names when reading or writing: {names}
-"""
-
-    app_system = """You are a senior React developer building personal productivity apps.
-Return ONLY a complete raw HTML file starting with <!DOCTYPE html>. No markdown, no explanation.
-
-Structure:
-- Load React 18 + ReactDOM from unpkg CDN (UMD builds) in <head>
-- Load @babel/standalone from unpkg in <head> for JSX transform
-- Put all CSS in a <style> tag in <head> (Google Fonts via @import url())
-- Put a <div id="root"></div> in <body>
-- Write the entire app as a <script type="text/babel"> block
-
-CDN URLs to use (exactly):
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-React code requirements:
-1. Destructure hooks at the top: const { useState, useEffect, useCallback, useRef, useMemo } = React;
-2. Write a single <App /> component using functional components and hooks
-3. ALWAYS read from window.vibeDB on mount (useEffect with [] deps) — never generate placeholder data when real data is injected
-4. Write changes back immediately: window.parent.postMessage({ type: 'vibeDB:write', sourceName, records }, '*')
-5. Fallback to localStorage only when window.vibeDB is absent or empty
-6. Mount with: ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-
-Design requirements:
-7. Fully functional, beautiful, polished app
-8. Clean light design — soft whites, warm grays, one tasteful accent color
-9. Make it feel like a real product someone would open every day
-10. Handle empty states gracefully with helpful prompts
-11. Smooth transitions and hover states via CSS"""
-
-    name_system = "Generate a short 2-4 word app name. Reply with ONLY the name, no punctuation, no quotes."
-
-    try:
-        narrator.start_session()
-        try:
-            html = strip_fences(
-                generate_app_with_narration(
-                    client=client,
-                    model=MODEL,
-                    app_system=app_system,
-                    user_prompt=f"Build: {req.prompt}{data_ctx}",
-                    narrator=narrator,
-                    max_tokens=8000,
-                )
-            )
-        except Exception:
-            narrator.end_thinking()   # release lock even on error
-            raise
-        name = claude(name_system, f'App prompt: "{req.prompt}"', max_tokens=20).strip()
-        narrator.interrupt()
-        return GenerateAppResponse(html=html, name=name, source_plan=source_plan)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/generate-app-stream")
@@ -617,55 +509,3 @@ Rules:
     )
 
 
-@app.post("/api/edit-app", response_model=EditAppResponse)
-def edit_app(req: EditAppRequest):
-    # Step 1: Plan schema updates (Haiku with tools)
-    schema_updates = plan_schema_updates(req.prompt, req.sources)
-
-    # Step 2: Build data context
-    data_ctx = ""
-    if req.sources:
-        data_ctx = "\n\nLINKED DATA SOURCES (available as window.vibeDB):\n"
-        for src in req.sources:
-            data_ctx += f'\nSource: "{src.name}" (type: {src.type})\n'
-            data_ctx += f"Fields: {', '.join(f['key']+':'+f['type'] for f in src.fields)}\n"
-            if src.records:
-                data_ctx += f"Records ({len(src.records)} total):\n"
-                data_ctx += json.dumps(src.records[:12], indent=2) + "\n"
-
-        if schema_updates:
-            data_ctx += "\nSCHEMA CHANGES BEING APPLIED:\n"
-            for upd in schema_updates:
-                data_ctx += f'- "{upd.source_name}" fields updated to: {", ".join(f["key"] for f in upd.fields)}\n'
-
-    edit_system = """You are a senior React developer editing an existing personal productivity app.
-The user has an existing app (full HTML provided) and wants specific changes made.
-Return ONLY the complete updated HTML file starting with <!DOCTYPE html>. No markdown, no explanation.
-
-Rules:
-- Apply ONLY the requested changes. Preserve overall design, layout, and functionality unless asked to change them.
-- Keep the same CDN URLs (React 18, ReactDOM, @babel/standalone from unpkg).
-- ALWAYS read from window.vibeDB on mount — never use placeholder data.
-- Write changes back via: window.parent.postMessage({ type: 'vibeDB:write', sourceName, records }, '*')
-- If schema changes are listed above, update the app to use the new fields."""
-
-    try:
-        narrator.start_session()
-        try:
-            html = strip_fences(
-                generate_app_with_narration(
-                    client=client,
-                    model=MODEL,
-                    app_system=edit_system,
-                    user_prompt=f"Current app HTML:\n{req.current_html}\n\nEdit request: {req.prompt}{data_ctx}",
-                    narrator=narrator,
-                    max_tokens=12000,
-                )
-            )
-        except Exception:
-            narrator.end_thinking()
-            raise
-        narrator.interrupt()
-        return EditAppResponse(html=html, schema_updates=schema_updates)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

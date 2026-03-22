@@ -26,18 +26,6 @@ export interface SchemaUpdate {
   fields: Field[]
 }
 
-// Returns { html: string, schema_updates: SchemaUpdate[] }
-export async function editApp(
-  prompt: string,
-  currentHtml: string,
-  sources: unknown[],
-): Promise<{ html: string; schema_updates: SchemaUpdate[] }> {
-  return post('/api/edit-app', {
-    prompt,
-    current_html: currentHtml,
-    sources,
-  }) as Promise<{ html: string; schema_updates: SchemaUpdate[] }>
-}
 
 export type EditStreamEvent =
   | { type: 'audio'; data: string }
@@ -78,20 +66,6 @@ export async function* editAppStream(
   }
 }
 
-// Returns { html: string, name: string, source_plan: SourcePlan }
-export async function generateApp(
-  prompt: string,
-  sources: unknown[],
-  allSourceSummaries: unknown[],
-  pinnedSourceIds: string[] = [],
-): Promise<{ html: string; name: string; source_plan: SourcePlan }> {
-  return post('/api/generate-app', {
-    prompt,
-    sources,
-    all_source_summaries: allSourceSummaries,
-    pinned_source_ids: pinnedSourceIds,
-  }) as Promise<{ html: string; name: string; source_plan: SourcePlan }>
-}
 
 export type StreamEvent =
   | { type: 'audio'; data: string }
