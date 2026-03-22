@@ -799,7 +799,7 @@ const styles = {
   pasteHint: { fontSize: 12, color: 'var(--text3)', marginTop: 3, marginBottom: 7, fontStyle: 'italic' as const, fontFamily: "'Lora', serif" },
   input: { padding: '8px 12px', border: '1px solid var(--border2)', borderRadius: 'var(--radius)', fontSize: 13.5, outline: 'none', color: 'var(--text)', background: 'var(--bg)' },
   select: { padding: '8px 12px', border: '1px solid var(--border2)', borderRadius: 'var(--radius)', fontSize: 13.5, outline: 'none', background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' },
-  textarea: { width: '100%', padding: '10px 12px', border: '1px solid var(--border2)', borderRadius: 'var(--radius)', fontSize: 13, resize: 'vertical' as const, outline: 'none', color: 'var(--text)', lineHeight: 1.6 },
+  textarea: { width: '100%', padding: '10px 12px', border: '1px solid var(--border2)', borderRadius: 'var(--radius)', fontSize: 13, resize: 'vertical' as const, outline: 'none', color: 'var(--text)', background: 'var(--bg3)', lineHeight: 1.6 },
   errorMsg: { background: 'rgba(224,62,62,0.07)', border: '1px solid rgba(224,62,62,0.2)', color: 'var(--red)', padding: '8px 12px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 10 },
   primaryBtn: { padding: '8px 18px', background: 'var(--accent)', color: 'white', border: 'none', borderRadius: 'var(--radius)', fontSize: 13.5, fontWeight: 500, cursor: 'pointer' },
   secondaryBtn: { padding: '8px 14px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: 13, color: 'var(--text2)', cursor: 'pointer' },
