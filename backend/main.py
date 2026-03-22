@@ -71,6 +71,7 @@ class InferSchemaResponse(BaseModel):
     records: list[dict]
 
 class SourceData(BaseModel):
+    id: str = ""   # empty for generate-app, populated for edit-app
     name: str
     type: str
     fields: list[dict]
@@ -95,6 +96,20 @@ class PlannedExistingSource(BaseModel):
 class SourcePlan(BaseModel):
     existing_sources: list[PlannedExistingSource] = []
     new_sources: list[PlannedNewSource] = []
+
+class SchemaUpdate(BaseModel):
+    source_id: str
+    source_name: str
+    fields: list[dict]
+
+class EditAppRequest(BaseModel):
+    prompt: str
+    current_html: str
+    sources: list[SourceData] = []
+
+class EditAppResponse(BaseModel):
+    html: str
+    schema_updates: list[SchemaUpdate] = []
 
 class GenerateAppRequest(BaseModel):
     prompt: str
@@ -150,58 +165,106 @@ Parse ALL items from the input. Be thorough."""
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def plan_sources(prompt: str, all_source_summaries: list[ExistingSourceSummary]) -> SourcePlan:
-    system = """You are a data architect for a personal productivity app generator.
-A user wants to build a custom HTML5 app. Decide:
-1. Which of the user's existing data sources the app should read/write (only link if genuinely needed).
-2. What new data sources to create for data the app needs to persist (be intentional — do NOT create generic placeholders).
+def plan_sources(prompt: str, all_source_summaries: list[ExistingSourceSummary], pinned_source_ids: list[str] = []) -> SourcePlan:
+    tools = [
+        {
+            "name": "link_existing_source",
+            "description": "Link one of the user's existing data sources to this app. Call this for each existing source the app should read from or write to.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "source_id":   {"type": "string", "description": "UUID of the existing source"},
+                    "source_name": {"type": "string", "description": "Exact name of the existing source"}
+                },
+                "required": ["source_id", "source_name"]
+            }
+        },
+        {
+            "name": "create_new_source",
+            "description": "Create a brand-new data source for app-specific data. Only call this if NO existing source covers this data — never create a duplicate of an existing source.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "type": {"type": "string", "enum": ["tasks", "habits", "finances", "notes", "calendar", "custom"]},
+                    "icon": {"type": "string", "description": "An appropriate emoji"},
+                    "fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key":     {"type": "string", "description": "snake_case field key"},
+                                "label":   {"type": "string"},
+                                "type":    {"type": "string", "enum": ["text", "number", "boolean", "date", "select", "url"]},
+                                "options": {"type": "array", "items": {"type": "string"}}
+                            },
+                            "required": ["key", "label", "type"]
+                        }
+                    }
+                },
+                "required": ["name", "type", "icon", "fields"]
+            }
+        }
+    ]
 
-For new sources, design a complete field schema. Use only these types: text, number, boolean, date, select, url
-For select fields, include an "options" array. Always use lowercase_underscores for field keys.
-Choose an appropriate emoji icon for each new source.
-Type must be one of: tasks, habits, finances, notes, calendar, custom
+    system = """You are planning data sources for a personal productivity app.
 
-Return ONLY valid JSON — no markdown, no explanation:
-{
-  "existing_sources": [{"source_id": "<uuid>", "source_name": "<name>"}],
-  "new_sources": [
-    {
-      "name": "<Human-readable name>",
-      "type": "<type>",
-      "icon": "<emoji>",
-      "fields": [{"key": "<snake_case>", "label": "<Label>", "type": "<type>"}]
-    }
-  ]
-}
-If the app needs no persistent data, return empty arrays for both keys."""
+RULES (follow exactly):
+- If an existing source already covers data the app needs, ALWAYS call link_existing_source for it.
+- NEVER call create_new_source for something an existing source already covers.
+- Only call create_new_source for truly app-specific data that has no existing source.
+- If the app needs no persistent data at all, call neither tool.
+- Pinned sources MUST be linked unconditionally."""
 
     source_lines = "\n".join(
         f"- id: {s.id} | name: {s.name} | type: {s.type} | fields: {', '.join(f['key'] for f in s.fields)}"
         for s in all_source_summaries
     ) or "None"
 
-    user = f'App prompt: "{prompt}"\n\nUser\'s existing data sources:\n{source_lines}'
+    pinned_note = ""
+    if pinned_source_ids:
+        pinned = [s for s in all_source_summaries if s.id in pinned_source_ids]
+        pinned_note = f"\n\nUser has pinned these sources (MUST link): {[s.name for s in pinned]}"
+
+    user = f'App prompt: "{prompt}"\n\nUser\'s existing data sources:\n{source_lines}{pinned_note}'
 
     try:
-        raw = claude(system, user, max_tokens=1200)
-        data = json.loads(strip_fences(raw))
-        return SourcePlan(**data)
+        msg = client.messages.create(
+            model=MODEL_FAST,
+            max_tokens=1200,
+            tools=tools,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+
+        existing_sources = []
+        new_sources = []
+        seen_ids: set[str] = set()
+
+        for block in msg.content:
+            if block.type != "tool_use":
+                continue
+            if block.name == "link_existing_source":
+                inp = block.input
+                if inp["source_id"] not in seen_ids:
+                    existing_sources.append(PlannedExistingSource(
+                        source_id=inp["source_id"],
+                        source_name=inp["source_name"],
+                    ))
+                    seen_ids.add(inp["source_id"])
+            elif block.name == "create_new_source":
+                new_sources.append(PlannedNewSource(**block.input))
+
+        return SourcePlan(existing_sources=existing_sources, new_sources=new_sources)
+
     except Exception:
         return SourcePlan()
 
 
 @app.post("/api/generate-app", response_model=GenerateAppResponse)
 def generate_app(req: GenerateAppRequest):
-    # Step 1: Plan sources (Haiku — fast, cheap)
-    source_plan = plan_sources(req.prompt, req.all_source_summaries)
-
-    # Force-include pinned sources that Claude's plan didn't select
-    planned_existing_ids = {ps.source_id for ps in source_plan.existing_sources}
-    for src_summary in req.all_source_summaries:
-        if src_summary.id in req.pinned_source_ids and src_summary.id not in planned_existing_ids:
-            source_plan.existing_sources.append(
-                PlannedExistingSource(source_id=src_summary.id, source_name=src_summary.name)
-            )
+    # Step 1: Plan sources (Haiku with tool calls — fast, reliable)
+    source_plan = plan_sources(req.prompt, req.all_source_summaries, req.pinned_source_ids)
 
     # Step 2: Build data context using the plan
     sources_by_name = {s.name: s for s in req.sources}
@@ -242,20 +305,35 @@ Writing back (syncs to the parent app's database):
 IMPORTANT: Use ONLY these exact source names when reading or writing: {names}
 """
 
-    app_system = """You are a senior frontend developer building personal productivity apps.
+    app_system = """You are a senior React developer building personal productivity apps.
 Return ONLY a complete raw HTML file starting with <!DOCTYPE html>. No markdown, no explanation.
 
-Requirements:
-1. Fully functional, beautiful, polished single-file app
-2. Clean light design — soft whites, warm grays, one tasteful accent color
-3. Import Google Fonts via @import url() in a <style> tag
-4. ALL CSS and JS inline — no external dependencies
-5. If window.vibeDB is provided, display that real data immediately and prominently
-6. Let users add, edit, complete, and delete items — persist with localStorage as backup
-7. When data changes, post back: window.parent.postMessage({ type: 'vibeDB:write', sourceName, records }, '*')
-8. Make it feel like a real product someone would open every day
-9. Handle empty states gracefully
-10. Smooth micro-interactions and hover states"""
+Structure:
+- Load React 18 + ReactDOM from unpkg CDN (UMD builds) in <head>
+- Load @babel/standalone from unpkg in <head> for JSX transform
+- Put all CSS in a <style> tag in <head> (Google Fonts via @import url())
+- Put a <div id="root"></div> in <body>
+- Write the entire app as a <script type="text/babel"> block
+
+CDN URLs to use (exactly):
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+React code requirements:
+1. Destructure hooks at the top: const { useState, useEffect, useCallback, useRef, useMemo } = React;
+2. Write a single <App /> component using functional components and hooks
+3. ALWAYS read from window.vibeDB on mount (useEffect with [] deps) — never generate placeholder data when real data is injected
+4. Write changes back immediately: window.parent.postMessage({ type: 'vibeDB:write', sourceName, records }, '*')
+5. Fallback to localStorage only when window.vibeDB is absent or empty
+6. Mount with: ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+Design requirements:
+7. Fully functional, beautiful, polished app
+8. Clean light design — soft whites, warm grays, one tasteful accent color
+9. Make it feel like a real product someone would open every day
+10. Handle empty states gracefully with helpful prompts
+11. Smooth transitions and hover states via CSS"""
 
     name_system = "Generate a short 2-4 word app name. Reply with ONLY the name, no punctuation, no quotes."
 
@@ -278,5 +356,120 @@ Requirements:
         name = claude(name_system, f'App prompt: "{req.prompt}"', max_tokens=20).strip()
         narrator.interrupt()
         return GenerateAppResponse(html=html, name=name, source_plan=source_plan)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def plan_schema_updates(edit_prompt: str, sources: list[SourceData]) -> list[SchemaUpdate]:
+    if not sources:
+        return []
+
+    tool = {
+        "name": "update_source_schema",
+        "description": "Update the field list of an existing linked data source to support the requested edit. Only call this if the edit genuinely requires storing a new type of data that the source doesn't already have a field for.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_id":   {"type": "string"},
+                "source_name": {"type": "string"},
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key":     {"type": "string"},
+                            "label":   {"type": "string"},
+                            "type":    {"type": "string", "enum": ["text","number","boolean","date","select","url"]},
+                            "options": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["key", "label", "type"]
+                    }
+                }
+            },
+            "required": ["source_id", "source_name", "fields"]
+        }
+    }
+
+    source_info = "\n".join(
+        f"- id: {s.id} | name: {s.name} | fields: {', '.join(f['key']+':'+f['type'] for f in s.fields)}"
+        for s in sources
+    )
+
+    system = """You are reviewing an edit request for a personal productivity app.
+Decide if the edit requires adding or changing fields on any linked data source.
+RULES:
+- Only call update_source_schema if the edit stores a NEW kind of data not already covered by existing fields.
+- When updating, return the COMPLETE new field list (all existing fields plus new ones). Never remove existing fields.
+- If no schema changes are needed, call no tools."""
+
+    user = f'Edit request: "{edit_prompt}"\n\nLinked sources:\n{source_info}'
+
+    try:
+        msg = client.messages.create(
+            model=MODEL_FAST,
+            max_tokens=800,
+            tools=[tool],
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        updates = []
+        for block in msg.content:
+            if block.type == "tool_use" and block.name == "update_source_schema":
+                updates.append(SchemaUpdate(**block.input))
+        return updates
+    except Exception:
+        return []
+
+
+@app.post("/api/edit-app", response_model=EditAppResponse)
+def edit_app(req: EditAppRequest):
+    # Step 1: Plan schema updates (Haiku with tools)
+    schema_updates = plan_schema_updates(req.prompt, req.sources)
+
+    # Step 2: Build data context
+    data_ctx = ""
+    if req.sources:
+        data_ctx = "\n\nLINKED DATA SOURCES (available as window.vibeDB):\n"
+        for src in req.sources:
+            data_ctx += f'\nSource: "{src.name}" (type: {src.type})\n'
+            data_ctx += f"Fields: {', '.join(f['key']+':'+f['type'] for f in src.fields)}\n"
+            if src.records:
+                data_ctx += f"Records ({len(src.records)} total):\n"
+                data_ctx += json.dumps(src.records[:12], indent=2) + "\n"
+
+        if schema_updates:
+            data_ctx += "\nSCHEMA CHANGES BEING APPLIED:\n"
+            for upd in schema_updates:
+                data_ctx += f'- "{upd.source_name}" fields updated to: {", ".join(f["key"] for f in upd.fields)}\n'
+
+    edit_system = """You are a senior React developer editing an existing personal productivity app.
+The user has an existing app (full HTML provided) and wants specific changes made.
+Return ONLY the complete updated HTML file starting with <!DOCTYPE html>. No markdown, no explanation.
+
+Rules:
+- Apply ONLY the requested changes. Preserve overall design, layout, and functionality unless asked to change them.
+- Keep the same CDN URLs (React 18, ReactDOM, @babel/standalone from unpkg).
+- ALWAYS read from window.vibeDB on mount — never use placeholder data.
+- Write changes back via: window.parent.postMessage({ type: 'vibeDB:write', sourceName, records }, '*')
+- If schema changes are listed above, update the app to use the new fields."""
+
+    try:
+        narrator.start_session()
+        try:
+            html = strip_fences(
+                generate_app_with_narration(
+                    client=client,
+                    model=MODEL,
+                    app_system=edit_system,
+                    user_prompt=f"Current app HTML:\n{req.current_html}\n\nEdit request: {req.prompt}{data_ctx}",
+                    narrator=narrator,
+                    max_tokens=12000,
+                )
+            )
+        except Exception:
+            narrator.end_thinking()
+            raise
+        narrator.interrupt()
+        return EditAppResponse(html=html, schema_updates=schema_updates)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

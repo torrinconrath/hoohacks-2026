@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { generateApp } from '../lib/ai'
+import { generateApp, editApp } from '../lib/ai'
 import type { Source, AppRecord, App, Field } from '../types'
 
 function inferFieldType(v: unknown): string {
@@ -23,6 +23,7 @@ interface BuildPageProps {
   getRecords: (sourceId: string) => Promise<AppRecord[]>
   apps: App[]
   saveApp: (params: { name: string; prompt: string; html: string; sourceIds?: string[] }) => Promise<App>
+  updateApp: (id: string, updates: { html?: string; name?: string }) => Promise<App>
   deleteApp: (id: string) => Promise<void>
   activeAppId: string | null
   onSelectApp: (id: string | null) => void
@@ -31,14 +32,23 @@ interface BuildPageProps {
   updateSource: (id: string, updates: Partial<Source>) => Promise<Source>
 }
 
-export default function BuildPage({ sources, getRecords, apps, saveApp, deleteApp, activeAppId, onSelectApp, syncRecords, createSource }: BuildPageProps) {
+export default function BuildPage({ sources, getRecords, apps, saveApp, updateApp, deleteApp, activeAppId, onSelectApp, syncRecords, createSource, updateSource }: BuildPageProps) {
   const [prompt, setPrompt]               = useState('')
   const [building, setBuilding]           = useState(false)
   const [error, setError]                 = useState('')
   const [progress, setProgress]           = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set())
+  const [editOpen, setEditOpen]                   = useState(false)
+  const [editPrompt, setEditPrompt]               = useState('')
+  const [editing, setEditing]                     = useState(false)
+  const [editError, setEditError]                 = useState('')
+  const [editProgress, setEditProgress]           = useState(0)
+  const [editProgressLabel, setEditProgressLabel] = useState('')
   const frameRef = useRef<HTMLIFrameElement>(null)
+
+  // Reset edit bar when switching apps
+  useEffect(() => { setEditOpen(false); setEditPrompt(''); setEditError('') }, [activeAppId])
 
   function toggleSource(id: string) {
     setSelectedSourceIds(prev => {
@@ -124,6 +134,43 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
       setError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
       setBuilding(false); setProgress(0)
+    }
+  }
+
+  // ── Edit ──────────────────────────────────────────────────────────────────
+  async function handleEdit() {
+    if (!editPrompt.trim() || !activeApp) return
+    setEditing(true); setEditError('')
+    setEditProgress(10); setEditProgressLabel('Planning changes…')
+
+    try {
+      const linkedSources = sources.filter(s => activeApp.source_ids?.includes(s.id))
+      const sourcesWithRecords = await Promise.all(
+        linkedSources.map(async src => {
+          const records = await getRecords(src.id)
+          return { id: src.id, name: src.name, type: src.type, fields: src.fields, records: records.map(r => r.data) }
+        })
+      )
+
+      setEditProgress(30); setEditProgressLabel('Editing app…')
+      const { html, schema_updates } = await editApp(editPrompt, activeApp.html, sourcesWithRecords)
+      if (!html || !html.includes('<')) throw new Error('Edit failed. Try rephrasing.')
+
+      setEditProgress(80); setEditProgressLabel('Applying changes…')
+
+      for (const upd of schema_updates) {
+        await updateSource(upd.source_id, { fields: upd.fields })
+      }
+
+      await updateApp(activeApp.id, { html })
+
+      setEditProgress(100)
+      setEditPrompt('')
+      setEditOpen(false)
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Something went wrong.')
+    } finally {
+      setEditing(false); setEditProgress(0)
     }
   }
 
@@ -269,7 +316,13 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
                 🗄️ {sources.filter(s => activeApp.source_ids?.includes(s.id)).map(s => s.name).join(' · ')}
               </div>
             )}
-            <button style={{ ...styles.backBtn, marginLeft: 'auto', color: 'var(--red)', borderColor: 'rgba(224,62,62,0.25)' }}
+            <button
+              style={{ ...styles.backBtn, marginLeft: 'auto', background: editOpen ? 'var(--accent-s)' : undefined, color: editOpen ? 'var(--accent)' : undefined, borderColor: editOpen ? 'rgba(124,106,245,0.35)' : undefined }}
+              onClick={() => { setEditOpen(o => !o); setEditError('') }}
+            >
+              {editOpen ? 'Close' : '✏️ Edit'}
+            </button>
+            <button style={{ ...styles.backBtn, color: 'var(--red)', borderColor: 'rgba(224,62,62,0.25)' }}
               onClick={() => { deleteApp(activeApp.id); onSelectApp(null) }}>
               Delete
             </button>
@@ -281,6 +334,30 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, deleteAp
             sandbox="allow-scripts allow-forms allow-same-origin"
             title={activeApp.name}
           />
+          {editOpen && (
+            <div style={styles.editBar}>
+              {editError && <div style={styles.editError}>{editError}</div>}
+              <div style={styles.editInputRow}>
+                <input
+                  style={styles.editInput}
+                  value={editPrompt}
+                  onChange={e => setEditPrompt(e.target.value)}
+                  placeholder="Describe your change… e.g. add a priority field, change accent color to blue"
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEdit() } }}
+                  disabled={editing}
+                  autoFocus
+                />
+                <button style={{ ...styles.buildBtn, opacity: editing ? 0.6 : 1 }} onClick={handleEdit} disabled={editing}>
+                  {editing ? editProgressLabel : 'Apply →'}
+                </button>
+              </div>
+              {editing && (
+                <div style={styles.progressTrack}>
+                  <div style={{ ...styles.progressFill, width: `${editProgress}%` }} />
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -332,6 +409,11 @@ const styles = {
   appTileSrcs: { fontSize: 11.5, color: 'var(--accent)', marginBottom: 3 },
   appTileDate: { fontSize: 11, color: 'var(--text3)' },
   appTileDel: { position: 'absolute' as const, top: 10, right: 10, background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 14, padding: '2px 4px', borderRadius: 3, display: 'none' },
+
+  editBar: { borderTop: '1px solid var(--border)', background: 'var(--bg2)', padding: '12px 18px', flexShrink: 0 },
+  editError: { fontSize: 12.5, color: 'var(--red)', marginBottom: 8 },
+  editInputRow: { display: 'flex', gap: 8, alignItems: 'center' },
+  editInput: { flex: 1, padding: '8px 12px', border: '1.5px solid var(--border2)', borderRadius: 'var(--radius)' as const, background: 'var(--bg)', fontSize: 13.5, color: 'var(--text)', outline: 'none' },
 
   viewer: { flex: 1, display: 'flex', flexDirection: 'column' as const, overflow: 'hidden' },
   viewerBar: { padding: '10px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg2)', flexShrink: 0 },

@@ -19,7 +19,7 @@ export default function App() {
     bulkCreateRecords, syncRecords,
   } = useSources(user?.id)
 
-  const { apps, saveApp, deleteApp } = useApps(user?.id)
+  const { apps, saveApp, updateApp, deleteApp } = useApps(user?.id)
 
   if (loading) return <Spinner />
   if (!user)   return <AuthPage />
@@ -60,6 +60,7 @@ export default function App() {
             getRecords={getRecords}
             apps={apps}
             saveApp={saveApp}
+            updateApp={updateApp}
             deleteApp={deleteApp}
             activeAppId={activeAppId}
             onSelectApp={id => setActiveAppId(id)}

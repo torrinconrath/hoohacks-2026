@@ -20,6 +20,25 @@ export async function inferSchema(type: string, name: string, rawText: string): 
   return post('/api/infer-schema', { type, name, raw_text: rawText }) as Promise<{ fields: Field[]; records: Record<string, unknown>[] }>
 }
 
+export interface SchemaUpdate {
+  source_id: string
+  source_name: string
+  fields: Field[]
+}
+
+// Returns { html: string, schema_updates: SchemaUpdate[] }
+export async function editApp(
+  prompt: string,
+  currentHtml: string,
+  sources: unknown[],
+): Promise<{ html: string; schema_updates: SchemaUpdate[] }> {
+  return post('/api/edit-app', {
+    prompt,
+    current_html: currentHtml,
+    sources,
+  }) as Promise<{ html: string; schema_updates: SchemaUpdate[] }>
+}
+
 // Returns { html: string, name: string, source_plan: SourcePlan }
 export async function generateApp(
   prompt: string,
