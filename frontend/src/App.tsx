@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { useAuth }    from './hooks/useAuth'
 import { useSources } from './hooks/useSources'
 import { useApps }    from './hooks/useApps'
-import AuthPage  from './pages/AuthPage'
-import DataPage  from './pages/DataPage'
-import BuildPage from './pages/BuildPage'
+import { useNotion }  from './hooks/useNotion'
+import AuthPage             from './pages/AuthPage'
+import DataPage             from './pages/DataPage'
+import BuildPage            from './pages/BuildPage'
+import NotionCallbackPage   from './pages/NotionCallbackPage'
 import Sidebar   from './components/Sidebar'
 
 export default function App() {
@@ -20,9 +22,23 @@ export default function App() {
   } = useSources(user?.id)
 
   const { apps, saveApp, updateApp, deleteApp } = useApps(user?.id)
+  const notion = useNotion(user?.id)
 
   if (loading) return <Spinner />
   if (!user)   return <AuthPage />
+
+  // Handle Notion OAuth callback route (/notion/callback?code=...)
+  if (window.location.pathname === '/notion/callback') {
+    return (
+      <NotionCallbackPage
+        onConnect={notion.connectNotion}
+        onDone={() => {
+          window.history.replaceState({}, '', '/')
+          window.location.reload()
+        }}
+      />
+    )
+  }
 
   return (
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
@@ -52,6 +68,7 @@ export default function App() {
             updateRecord={updateRecord}
             deleteRecord={deleteRecord}
             bulkCreateRecords={bulkCreateRecords}
+            notion={notion}
           />
         )}
         {view === 'build' && (
@@ -67,6 +84,7 @@ export default function App() {
             syncRecords={syncRecords}
             createSource={createSource}
             updateSource={updateSource}
+            notion={notion}
           />
         )}
       </main>

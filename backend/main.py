@@ -1,9 +1,11 @@
 import os
 import json
 import queue
+import base64
 import threading
 from contextlib import asynccontextmanager
 
+import requests as req_lib
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -14,6 +16,96 @@ import anthropic
 from tts_narrator import AppNarrator, generate_app_with_narration
 
 load_dotenv()
+
+# ── Notion config ─────────────────────────────────────────────────────────────
+NOTION_CLIENT_ID     = os.getenv("NOTION_CLIENT_ID", "")
+NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET", "")
+NOTION_REDIRECT_URI  = os.getenv("NOTION_REDIRECT_URI", "http://localhost:5173/notion/callback")
+NOTION_VERSION       = "2022-06-28"
+NOTION_API           = "https://api.notion.com/v1"
+
+# ── Notion property helpers ───────────────────────────────────────────────────
+
+# Map Notion property types to Mugen field types
+_NOTION_TYPE_MAP: dict[str, str] = {
+    "title": "text",
+    "rich_text": "text",
+    "number": "number",
+    "select": "select",
+    "multi_select": "text",
+    "date": "date",
+    "checkbox": "boolean",
+    "url": "url",
+    "email": "text",
+    "phone_number": "text",
+    "created_time": "date",
+    "last_edited_time": "date",
+}
+_SKIP_TYPES = {"relation", "formula", "rollup", "people", "files", "status",
+               "created_by", "last_edited_by", "unique_id", "verification"}
+
+def _notion_props_to_fields(properties: dict) -> list[dict]:
+    """Convert Notion database properties to Mugen fields."""
+    fields = []
+    for prop_name, prop_def in properties.items():
+        ptype = prop_def.get("type", "")
+        if ptype in _SKIP_TYPES:
+            continue
+        mtype = _NOTION_TYPE_MAP.get(ptype)
+        if not mtype:
+            continue
+        key = prop_name.lower().replace(" ", "_").replace("-", "_")
+        key = "".join(c for c in key if c.isalnum() or c == "_")
+        field: dict = {"key": key, "label": prop_name, "type": mtype}
+        if ptype == "select":
+            field["options"] = [opt["name"] for opt in prop_def.get("select", {}).get("options", [])]
+        fields.append(field)
+    return fields
+
+def _extract_notion_value(prop_def: dict) -> object:
+    """Extract a plain value from a Notion page property."""
+    ptype = prop_def.get("type", "")
+    v = prop_def.get(ptype)
+    if v is None:
+        return None
+    if ptype == "title":
+        return v[0]["plain_text"] if v else ""
+    if ptype == "rich_text":
+        return v[0]["plain_text"] if v else ""
+    if ptype == "number":
+        return v
+    if ptype == "select":
+        return v["name"] if v else None
+    if ptype == "multi_select":
+        return ", ".join(opt["name"] for opt in v)
+    if ptype == "date":
+        return v["start"] if v else None
+    if ptype == "checkbox":
+        return v
+    if ptype == "url":
+        return v
+    if ptype in ("email", "phone_number"):
+        return v
+    if ptype in ("created_time", "last_edited_time"):
+        return v[:10] if v else None  # ISO date only
+    return None
+
+def _notion_pages_to_records(pages: list[dict], fields: list[dict]) -> list[dict]:
+    """Convert Notion pages to Mugen records (includes __notion_page_id__)."""
+    records = []
+    key_to_label = {f["key"]: f["label"] for f in fields}
+    label_to_key = {f["label"]: f["key"] for f in fields}
+    for i, page in enumerate(pages):
+        record: dict = {"__notion_page_id__": page["id"], "id": str(i + 1)}
+        props = page.get("properties", {})
+        for prop_name, prop_def in props.items():
+            key = label_to_key.get(prop_name)
+            if not key:
+                continue
+            record[key] = _extract_notion_value(prop_def)
+        records.append(record)
+    return records
+
 
 # ── Anthropic client ──────────────────────────────────────────────────────────
 # Global fallback client (used only if ANTHROPIC_API_KEY env var is set, e.g. local dev)
@@ -131,11 +223,207 @@ class GenerateAppRequest(BaseModel):
     all_source_summaries: list[ExistingSourceSummary] = []
     pinned_source_ids: list[str] = []
 
+# ── Request models for Notion ─────────────────────────────────────────────────
+
+class NotionAuthExchangeRequest(BaseModel):
+    code: str
+
+class NotionPushRequest(BaseModel):
+    records: list[dict]
+    fields: list[dict]  # Mugen fields for the source (to know types for write-back)
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Notion OAuth ──────────────────────────────────────────────────────────────
+
+@app.post("/api/notion/auth/exchange")
+def notion_auth_exchange(req: NotionAuthExchangeRequest):
+    """Exchange an OAuth authorization code for a Notion access token."""
+    if not NOTION_CLIENT_ID or not NOTION_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Notion OAuth not configured on server.")
+    credentials = base64.b64encode(f"{NOTION_CLIENT_ID}:{NOTION_CLIENT_SECRET}".encode()).decode()
+    resp = req_lib.post(
+        f"{NOTION_API}/oauth/token",
+        headers={"Authorization": f"Basic {credentials}", "Content-Type": "application/json"},
+        json={"grant_type": "authorization_code", "code": req.code, "redirect_uri": NOTION_REDIRECT_URI},
+        timeout=15,
+    )
+    if not resp.ok:
+        detail = resp.json().get("error_description") or resp.json().get("error") or f"Notion error {resp.status_code}"
+        raise HTTPException(status_code=400, detail=detail)
+    data = resp.json()
+    return {
+        "access_token": data.get("access_token"),
+        "workspace_id": data.get("workspace_id"),
+        "workspace_name": data.get("workspace_name"),
+        "bot_id": data.get("bot_id"),
+    }
+
+
+def _notion_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION, "Content-Type": "application/json"}
+
+
+@app.post("/api/notion/databases")
+def notion_list_databases(request: Request):
+    """List all Notion databases accessible to the integration."""
+    token = request.headers.get("X-Notion-Token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="X-Notion-Token header required.")
+    resp = req_lib.post(
+        f"{NOTION_API}/search",
+        headers=_notion_headers(token),
+        json={"filter": {"value": "database", "property": "object"}, "page_size": 100},
+        timeout=15,
+    )
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    results = resp.json().get("results", [])
+    databases = []
+    for db in results:
+        title_parts = db.get("title", [])
+        title = title_parts[0]["plain_text"] if title_parts else "Untitled"
+        databases.append({"id": db["id"], "title": title})
+    return {"databases": databases}
+
+
+@app.post("/api/notion/database/{database_id}/schema")
+def notion_database_schema(database_id: str, request: Request):
+    """Get the Mugen-mapped field schema for a Notion database."""
+    token = request.headers.get("X-Notion-Token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="X-Notion-Token header required.")
+    resp = req_lib.get(
+        f"{NOTION_API}/databases/{database_id}",
+        headers=_notion_headers(token),
+        timeout=15,
+    )
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    db = resp.json()
+    title_parts = db.get("title", [])
+    db_title = title_parts[0]["plain_text"] if title_parts else "Untitled"
+    fields = _notion_props_to_fields(db.get("properties", {}))
+    return {"title": db_title, "fields": fields}
+
+
+@app.post("/api/notion/database/{database_id}/query")
+def notion_database_query(database_id: str, request: Request):
+    """Fetch all records from a Notion database, mapped to Mugen format."""
+    token = request.headers.get("X-Notion-Token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="X-Notion-Token header required.")
+    # First get schema
+    schema_resp = req_lib.get(
+        f"{NOTION_API}/databases/{database_id}",
+        headers=_notion_headers(token),
+        timeout=15,
+    )
+    if not schema_resp.ok:
+        raise HTTPException(status_code=schema_resp.status_code, detail=schema_resp.text)
+    fields = _notion_props_to_fields(schema_resp.json().get("properties", {}))
+    # Paginate through all pages
+    pages: list[dict] = []
+    cursor = None
+    while True:
+        body: dict = {"page_size": 100}
+        if cursor:
+            body["start_cursor"] = cursor
+        resp = req_lib.post(
+            f"{NOTION_API}/databases/{database_id}/query",
+            headers=_notion_headers(token),
+            json=body,
+            timeout=15,
+        )
+        if not resp.ok:
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        data = resp.json()
+        pages.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+    records = _notion_pages_to_records(pages, fields)
+    return {"fields": fields, "records": records}
+
+
+@app.post("/api/notion/database/{database_id}/push")
+def notion_database_push(database_id: str, req: NotionPushRequest, request: Request):
+    """Write Mugen records back to a Notion database (update existing, create new)."""
+    token = request.headers.get("X-Notion-Token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="X-Notion-Token header required.")
+    # Fetch database schema to know Notion property types (title vs rich_text, etc.)
+    schema_resp = req_lib.get(
+        f"{NOTION_API}/databases/{database_id}",
+        headers=_notion_headers(token),
+        timeout=15,
+    )
+    if not schema_resp.ok:
+        raise HTTPException(status_code=schema_resp.status_code, detail=schema_resp.text)
+    notion_props = schema_resp.json().get("properties", {})
+    # Map: field_label → notion_type
+    label_to_notion_type = {name: pdef.get("type", "") for name, pdef in notion_props.items()}
+    field_map = {f["key"]: f for f in req.fields}
+    updated = 0
+    created = 0
+    for record in req.records:
+        page_id = record.get("__notion_page_id__")
+        properties: dict = {}
+        for key, value in record.items():
+            if key in ("__notion_page_id__", "id"):
+                continue
+            field = field_map.get(key)
+            if not field:
+                continue
+            label = field["label"]
+            notion_type = label_to_notion_type.get(label, "")
+            if not notion_type or notion_type in _SKIP_TYPES:
+                continue
+            if notion_type == "title":
+                properties[label] = {"title": [{"text": {"content": str(value or "")}}]}
+            elif notion_type == "rich_text":
+                properties[label] = {"rich_text": [{"text": {"content": str(value or "")}}]}
+            elif notion_type == "number":
+                try:
+                    properties[label] = {"number": float(value)}  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    properties[label] = {"number": None}
+            elif notion_type == "select":
+                properties[label] = {"select": {"name": str(value)} if value else None}  # type: ignore[dict-item]
+            elif notion_type == "date":
+                properties[label] = {"date": {"start": str(value)} if value else None}  # type: ignore[dict-item]
+            elif notion_type == "checkbox":
+                properties[label] = {"checkbox": bool(value)}
+            elif notion_type == "url":
+                properties[label] = {"url": str(value) if value else None}
+            elif notion_type in ("email", "phone_number"):
+                properties[label] = {notion_type: str(value) if value else None}
+        if not properties:
+            continue
+        if page_id:
+            resp = req_lib.patch(
+                f"{NOTION_API}/pages/{page_id}",
+                headers=_notion_headers(token),
+                json={"properties": properties},
+                timeout=15,
+            )
+            if resp.ok:
+                updated += 1
+        else:
+            resp = req_lib.post(
+                f"{NOTION_API}/pages",
+                headers=_notion_headers(token),
+                json={"parent": {"database_id": database_id}, "properties": properties},
+                timeout=15,
+            )
+            if resp.ok:
+                created += 1
+    return {"updated": updated, "created": created}
 
 
 @app.post("/api/infer-schema", response_model=InferSchemaResponse)

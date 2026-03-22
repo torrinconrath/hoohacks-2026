@@ -38,10 +38,12 @@ export function useSources(userId: string | undefined) {
 
   // ── Sources ──────────────────────────────────────────────────────────────
 
-  async function createSource({ name, type, icon = '📋', fields = [] }: { name: string; type: string; icon?: string; fields?: Field[] }) {
+  async function createSource({ name, type, icon = '📋', fields = [], metadata }: { name: string; type: string; icon?: string; fields?: Field[]; metadata?: Record<string, unknown> }) {
+    const row: Record<string, unknown> = { user_id: userId, name, type, icon, fields }
+    if (metadata) row.metadata = metadata
     const { data, error } = await supabase
       .from('sources')
-      .insert({ user_id: userId, name, type, icon, fields })
+      .insert(row)
       .select()
       .single()
     if (error) throw error

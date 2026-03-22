@@ -12,6 +12,7 @@ export interface Source {
   type: string
   icon: string
   fields: Field[]
+  metadata?: Record<string, unknown>
   created_at: string
 }
 

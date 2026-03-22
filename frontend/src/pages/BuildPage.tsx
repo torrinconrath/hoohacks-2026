@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { generateAppStream, editAppStream } from '../lib/ai'
 import type { Source, AppRecord, App, Field, SourcePlan } from '../types'
+import type { useNotion } from '../hooks/useNotion'
 import deliriousSrc from '../assets/Delirious.mp3'
 
 function inferFieldType(v: unknown): string {
@@ -19,6 +20,8 @@ const SUGGESTIONS = [
   'a personal net worth tracker over time',
 ]
 
+type NotionHook = ReturnType<typeof useNotion>
+
 interface BuildPageProps {
   sources: Source[]
   getRecords: (sourceId: string) => Promise<AppRecord[]>
@@ -31,9 +34,10 @@ interface BuildPageProps {
   syncRecords: (sourceId: string, recordsData: Record<string, unknown>[]) => Promise<void>
   createSource: (params: { name: string; type: string; icon?: string; fields?: Field[] }) => Promise<Source>
   updateSource: (id: string, updates: Partial<Source>) => Promise<Source>
+  notion: NotionHook
 }
 
-export default function BuildPage({ sources, getRecords, apps, saveApp, updateApp, deleteApp, activeAppId, onSelectApp, syncRecords, createSource, updateSource }: BuildPageProps) {
+export default function BuildPage({ sources, getRecords, apps, saveApp, updateApp, deleteApp, activeAppId, onSelectApp, syncRecords, createSource, updateSource, notion }: BuildPageProps) {
   const [prompt, setPrompt]               = useState('')
   const [building, setBuilding]           = useState(false)
   const [error, setError]                 = useState('')
@@ -81,10 +85,19 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
         src = await createSource({ name: sourceName, type: 'custom', icon: '⚡', fields: inferredFields })
       }
       await syncRecords(src.id, records)
+      // If this source is linked to a Notion database, push changes back
+      const notionDbId = src.metadata?.notion_database_id as string | undefined
+      if (notionDbId && notion.connection) {
+        try {
+          await notion.pushDatabase(notion.connection.access_token, notionDbId, records, src.fields)
+        } catch (err) {
+          console.warn('Notion write-back failed:', err)
+        }
+      }
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [sources, syncRecords, createSource])
+  }, [sources, syncRecords, createSource, notion])
 
   // ── Build ─────────────────────────────────────────────────────────────────
   async function handleBuild() {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { inferSchema } from '../lib/ai'
 import type { Source, AppRecord, Field } from '../types'
+import type { useNotion } from '../hooks/useNotion'
 
 const TYPE_OPTIONS = [
   { value: 'tasks',    label: '📋 Tasks / Todos' },
@@ -25,11 +26,13 @@ const MANUAL_DEFAULTS: Record<string, Omit<Field, 'key'>[]> = {
   custom:   [],
 }
 
+type NotionHook = ReturnType<typeof useNotion>
+
 interface DataPageProps {
   sources: Source[]
   activeSourceId: string | null
   onSelectSource: (id: string | null) => void
-  createSource: (params: { name: string; type: string; icon?: string; fields?: Field[] }) => Promise<Source>
+  createSource: (params: { name: string; type: string; icon?: string; fields?: Field[]; metadata?: Record<string, unknown> }) => Promise<Source>
   updateSource: (id: string, updates: Partial<Source>) => Promise<Source>
   deleteSource: (id: string) => Promise<void>
   getRecords: (sourceId: string) => Promise<AppRecord[]>
@@ -37,12 +40,14 @@ interface DataPageProps {
   updateRecord: (recordId: string, recordData: Record<string, unknown>) => Promise<AppRecord>
   deleteRecord: (recordId: string) => Promise<void>
   bulkCreateRecords: (sourceId: string, recordsData: Record<string, unknown>[]) => Promise<AppRecord[]>
+  notion: NotionHook
 }
 
 export default function DataPage({
   sources, activeSourceId, onSelectSource,
   createSource, updateSource, deleteSource,
-  getRecords, createRecord, updateRecord, deleteRecord, bulkCreateRecords
+  getRecords, createRecord, updateRecord, deleteRecord, bulkCreateRecords,
+  notion,
 }: DataPageProps) {
   const [showAddForm, setShowAddForm] = useState(false)
   const [records, setRecords]         = useState<AppRecord[]>([])
@@ -168,7 +173,22 @@ export default function DataPage({
             setShowAddForm(false)
             onSelectSource(src.id)
           }}
+          onSaveNotion={async ({ name, databaseId }) => {
+            const token = notion.connection!.access_token
+            const { fields, records } = await notion.queryDatabase(token, databaseId)
+            const src = await createSource({
+              name, type: 'custom', icon: '🔗', fields,
+              metadata: { notion_database_id: databaseId },
+            })
+            if (records.length > 0) {
+              const recs = await bulkCreateRecords(src.id, records)
+              setRecords(recs)
+            }
+            setShowAddForm(false)
+            onSelectSource(src.id)
+          }}
           onCancel={() => setShowAddForm(false)}
+          notion={notion}
         />
       )}
 
@@ -309,7 +329,9 @@ export default function DataPage({
 interface AddSourceFormProps {
   onSave: (params: { name: string; type: string; icon: string; raw: string }) => Promise<void>
   onSaveManual: (params: { name: string; type: string; icon: string; fields: Field[] }) => Promise<void>
+  onSaveNotion: (params: { name: string; databaseId: string }) => Promise<void>
   onCancel: () => void
+  notion: NotionHook
 }
 
 function labelToKey(label: string): string {
@@ -318,8 +340,8 @@ function labelToKey(label: string): string {
 
 // ── AddSourceForm ─────────────────────────────────────────────────────────────
 
-function AddSourceForm({ onSave, onSaveManual, onCancel }: AddSourceFormProps) {
-  const [mode, setMode]       = useState<'import' | 'file' | 'calendar' | 'manual'>('import')
+function AddSourceForm({ onSave, onSaveManual, onSaveNotion, onCancel, notion }: AddSourceFormProps) {
+  const [mode, setMode]       = useState<'import' | 'file' | 'calendar' | 'manual' | 'notion'>('import')
   const [type, setType]       = useState('tasks')
   const [name, setName]       = useState('')
   const [raw, setRaw]         = useState('')
@@ -343,6 +365,32 @@ function AddSourceForm({ onSave, onSaveManual, onCancel }: AddSourceFormProps) {
   const [manualFields, setManualFields] = useState<Array<{ label: string; type: string; options: string }>>(() =>
     MANUAL_DEFAULTS['tasks'].map(f => ({ label: f.label, type: f.type, options: f.options?.join(',') || '' }))
   )
+
+  // ── Notion state ──────────────────────────────────────────────────────────
+  const [notionDatabases, setNotionDatabases]       = useState<{ id: string; title: string }[]>([])
+  const [notionDbLoading, setNotionDbLoading]       = useState(false)
+  const [notionSelectedDb, setNotionSelectedDb]     = useState<string>('')
+  const [notionDbError, setNotionDbError]           = useState('')
+
+  async function loadNotionDatabases() {
+    if (!notion.connection) return
+    setNotionDbLoading(true); setNotionDbError('')
+    try {
+      const { databases } = await notion.listDatabases(notion.connection.access_token)
+      setNotionDatabases(databases)
+      if (databases.length > 0 && !notionSelectedDb) setNotionSelectedDb(databases[0].id)
+    } catch (err) {
+      setNotionDbError(err instanceof Error ? err.message : 'Failed to load databases.')
+    } finally {
+      setNotionDbLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (mode === 'notion' && notion.connection && notionDatabases.length === 0) {
+      loadNotionDatabases()
+    }
+  }, [mode, notion.connection]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleTypeChange(newType: string) {
     setType(newType)
@@ -472,6 +520,7 @@ function AddSourceForm({ onSave, onSaveManual, onCancel }: AddSourceFormProps) {
     { id: 'file',     label: '📄 File Upload'    },
     { id: 'calendar', label: '📅 Calendar / ICS' },
     { id: 'manual',   label: '✏️ Manual Setup'   },
+    { id: 'notion',   label: '🔗 Notion'         },
   ]
 
   return (
@@ -496,30 +545,32 @@ function AddSourceForm({ onSave, onSaveManual, onCancel }: AddSourceFormProps) {
         ))}
       </div>
 
-      {/* Shared: type + name (calendar locks type to 'calendar') */}
-      <div style={styles.fieldRow}>
-        <div style={styles.fieldCol}>
-          <label style={styles.fieldLabel}>Type</label>
-          <select
-            style={styles.select}
-            value={mode === 'calendar' ? 'calendar' : type}
-            disabled={mode === 'calendar'}
-            onChange={e => handleTypeChange(e.target.value)}
-          >
-            {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
+      {/* Shared: type + name (hidden for Notion mode; calendar locks type) */}
+      {mode !== 'notion' && (
+        <div style={styles.fieldRow}>
+          <div style={styles.fieldCol}>
+            <label style={styles.fieldLabel}>Type</label>
+            <select
+              style={styles.select}
+              value={mode === 'calendar' ? 'calendar' : type}
+              disabled={mode === 'calendar'}
+              onChange={e => handleTypeChange(e.target.value)}
+            >
+              {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div style={{ ...styles.fieldCol, flex: 2 }}>
+            <label style={styles.fieldLabel}>Name</label>
+            <input
+              style={styles.input}
+              type="text"
+              placeholder={`e.g. My ${mode === 'calendar' ? 'Calendar' : type}`}
+              value={name}
+              onChange={e => setName(e.target.value)}
+            />
+          </div>
         </div>
-        <div style={{ ...styles.fieldCol, flex: 2 }}>
-          <label style={styles.fieldLabel}>Name</label>
-          <input
-            style={styles.input}
-            type="text"
-            placeholder={`e.g. My ${mode === 'calendar' ? 'Calendar' : type}`}
-            value={name}
-            onChange={e => setName(e.target.value)}
-          />
-        </div>
-      </div>
+      )}
 
       {/* ── AI IMPORT ──────────────────────────────────────────────────────── */}
       {mode === 'import' && (
@@ -690,6 +741,109 @@ function AddSourceForm({ onSave, onSaveManual, onCancel }: AddSourceFormProps) {
             <button type="button" style={styles.secondaryBtn} onClick={onCancel}>Cancel</button>
           </div>
         </form>
+      )}
+
+      {/* ── NOTION ─────────────────────────────────────────────────────────── */}
+      {mode === 'notion' && (
+        <div>
+          {!notion.connection ? (
+            /* Not connected */
+            <div style={{ textAlign: 'center', padding: '32px 16px' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🔗</div>
+              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Connect your Notion workspace</div>
+              <div style={{ ...styles.pasteHint, marginBottom: 20 }}>
+                Authorize Mugen to read your Notion databases. You'll be redirected to Notion and back.
+              </div>
+              <button
+                style={styles.primaryBtn}
+                onClick={() => {
+                  const clientId = import.meta.env.VITE_NOTION_CLIENT_ID
+                  const redirectUri = encodeURIComponent(window.location.origin + '/notion/callback')
+                  window.location.href = `https://api.notion.com/v1/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code`
+                }}
+              >
+                Connect Notion →
+              </button>
+              <button type="button" style={{ ...styles.secondaryBtn, marginLeft: 8 }} onClick={onCancel}>Cancel</button>
+            </div>
+          ) : (
+            /* Connected — show database picker */
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, padding: '8px 12px', background: 'var(--accent-s)', border: '1px solid rgba(124,106,245,0.2)', borderRadius: 'var(--radius)' }}>
+                <span style={{ fontSize: 16 }}>✓</span>
+                <span style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 500 }}>
+                  Connected to {notion.connection.workspace_name || 'Notion'}
+                </span>
+                <button
+                  type="button"
+                  style={{ marginLeft: 'auto', background: 'none', border: 'none', fontSize: 12, color: 'var(--text3)', cursor: 'pointer' }}
+                  onClick={() => notion.disconnectNotion()}
+                >
+                  Disconnect
+                </button>
+              </div>
+
+              <div style={styles.fieldRow}>
+                <div style={{ ...styles.fieldCol, flex: 2 }}>
+                  <label style={styles.fieldLabel}>Source Name</label>
+                  <input
+                    style={styles.input}
+                    type="text"
+                    placeholder="e.g. My Tasks"
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 14 }}>
+                <label style={styles.fieldLabel}>Notion Database</label>
+                {notionDbLoading ? (
+                  <div style={{ ...styles.pasteHint, marginTop: 6 }}>Loading databases…</div>
+                ) : notionDbError ? (
+                  <div style={styles.errorMsg}>{notionDbError}</div>
+                ) : notionDatabases.length === 0 ? (
+                  <div style={{ ...styles.pasteHint, marginTop: 6 }}>
+                    No databases found. Make sure you shared databases with the integration.{' '}
+                    <span style={{ color: 'var(--accent)', cursor: 'pointer' }} onClick={loadNotionDatabases}>Retry</span>
+                  </div>
+                ) : (
+                  <select
+                    style={{ ...styles.select, width: '100%', marginTop: 4, color: "white" }}
+                    value={notionSelectedDb}
+                    onChange={e => setNotionSelectedDb(e.target.value)}
+                  >
+                    {notionDatabases.map(db => (
+                      <option key={db.id} value={db.id}>{db.title}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {notionDbError && <div style={styles.errorMsg}>{notionDbError}</div>}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  style={styles.primaryBtn}
+                  disabled={loading || !notionSelectedDb || notionDbLoading}
+                  onClick={async () => {
+                    if (!notionSelectedDb) return
+                    setLoading(true); setError('')
+                    try {
+                      const selectedTitle = notionDatabases.find(d => d.id === notionSelectedDb)?.title || 'Notion'
+                      await onSaveNotion({ name: name || selectedTitle, databaseId: notionSelectedDb })
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : 'Import failed.')
+                    } finally { setLoading(false) }
+                  }}
+                >
+                  {loading ? '⟳ Importing…' : 'Import from Notion →'}
+                </button>
+                <button type="button" style={styles.secondaryBtn} onClick={onCancel}>Cancel</button>
+              </div>
+              {error && <div style={{ ...styles.errorMsg, marginTop: 8 }}>{error}</div>}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )
