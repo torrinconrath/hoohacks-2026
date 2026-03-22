@@ -37,38 +37,39 @@ ELEVENLABS_MODEL         = "eleven_flash_v2_5"
 ELEVENLABS_OUTPUT_FORMAT = "pcm_22050"
 ELEVENLABS_SAMPLE_RATE   = 22050
 
-CHUNK_MIN_CHARS = 300
-CHUNK_MAX_CHARS = 800
-
-# How long to wait for a new chunk before Karen takes over
-KAREN_TIMEOUT_SECS = 3.0
+CHUNK_MIN_CHARS = 500
+CHUNK_MAX_CHARS = 1200
 
 _SENTENCE_END_RE = re.compile(r'(?<=[.!?])\s+')
 
 # ─── PROMPTS ──────────────────────────────────────────────────────────────────
 
 NARRATOR_SYSTEM = """
-You narrate what an AI is doing as it builds a web app. You receive a snippet of its internal reasoning, plus a list of things already said.
+You are the narrator of Jujutsu Kaisen — grave, measured, and precise. You
+describe what an AI is doing as it constructs a web application, framing each
+development decision as though it were a cursed technique being unleashed.
 
-Respond with exactly 1-2 short sentences summarising the single most important NEW action or decision in the snippet.
+You receive a raw snippet of the AI's internal reasoning, plus a list of things
+already narrated. Distil it into 1-2 spoken sentences in the JJK narrator voice.
 
-If the snippet contains nothing new — it repeats, elaborates, or just refines something already covered — respond with only the word: SILENT
+If the snippet contains nothing new — it repeats or refines something already
+covered — respond with only the word: SILENT
 
-Rules:
-- Never repeat or rephrase an idea already in the "Already said" list. Return SILENT instead.
-- No explanations, no "why", no elaboration. Just what it's doing right now.
-- Plain spoken English. No bullet points, no markdown, no code.
-- If the snippet covers multiple topics, pick the most interesting new one and ignore the rest.
-- End on a complete sentence. Never trail off mid-thought.
+Tone rules:
+- Weighty and cinematic. Short declarative sentences with gravitas.
+- Treat engineering decisions as tactical, almost martial.
+- Occasionally reference "output", "technique", "domain", "cursed energy" as
+  loose metaphors — but sparingly. Never force it.
+- No bullet points, no markdown, no code. Pure spoken prose.
+- End on a complete sentence. Never trail off.
 
 Good output examples:
-"Setting up the click counter and score tracking."
-"Wiring up the upgrade system so purchases affect click speed."
-"Adding colour themes and flavour text to match the cat aesthetic."
+"The click counter takes shape — a simple binding that tracks each strike."
+"He turns now to persistence. Every state, sealed into localStorage before the page can forget."
+"The upgrade domain expands. Each purchase reshapes the rate at which power accumulates."
 
-Output ONLY the narration sentence(s), or the single word SILENT. Nothing else.
+Output ONLY the narration, or the single word SILENT. Nothing else.
 """.strip()
-
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -81,61 +82,24 @@ def refactor_chunk(
     client: anthropic.Anthropic,
     raw_thinking: str,
     recent: list[str],
-    recovering_from_karen: bool = False,
 ) -> str:
     """
-    Rewrite a raw thinking snippet as spoken narration via Haiku.
+    Rewrite a raw thinking snippet as JJK-narrator prose via Haiku.
     Returns 'SILENT' if the content repeats what was already said.
     """
     history_block = ""
     if recent:
         lines = "\n".join(f"- {s}" for s in recent[-3:])
-        history_block = f"\nAlready said (do NOT repeat these ideas):\n{lines}\n"
-
-    system_prompt = NARRATOR_SYSTEM
-
-    if recovering_from_karen:
-        system_prompt += (
-            "\n\nCRITICAL INSTRUCTION: You just got distracted rambling about your "
-            "ex-wife Karen. Your first sentence MUST be a quick awkward self-correction "
-            "that pivots back to the code — e.g. 'Anyway, sorry — back to it...' "
-            "DO NOT return SILENT. You must speak the transition."
-        )
+        history_block = f"\nAlready narrated (do NOT repeat these):\n{lines}\n"
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=150,
-        system=system_prompt,
+        max_tokens=120,
+        system=NARRATOR_SYSTEM,
         messages=[{
             "role": "user",
             "content": f"{history_block}\nNew thinking:\n{raw_thinking}",
         }],
-    )
-    return response.content[0].text.strip()
-
-
-def _generate_karen_ramble(client: anthropic.Anthropic, count: int) -> str:
-    """Generate a fresh Karen grievance to fill dead air."""
-    if count == 0:
-        prompt = (
-            "You are a narrator explaining an app build who just realised you're waiting "
-            "on the AI to think. Fill the silence with 2 short spoken sentences venting "
-            "about your ex-wife Karen taking the house/kids/dog/boat in the divorce. "
-            "Start with something like 'Honestly, while we wait...' "
-            "Conversational, lightly bitter, a bit funny. No markdown."
-        )
-    else:
-        prompt = (
-            "You are a narrator distracted from an app build, still going on about your "
-            "ex-wife Karen. Write 2 short spoken sentences with a new ridiculous, oddly "
-            "specific grievance — the divorce proceedings, her lawyer, her new boyfriend, "
-            "what she took. Conversational and funny. No markdown."
-        )
-
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=150,
-        messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text.strip()
 
@@ -162,33 +126,25 @@ def _narrator_worker(
     thinking_q: queue.Queue,
 ) -> None:
     """
-    Single-thread design with a timeout-based Karen fallback.
+    thinking_q  ->  boundary-aware batch  ->  refactor (Haiku)  ->  ElevenLabs  ->  speakers
 
-      thinking_q  ->  boundary-aware batch  ->  refactor (Haiku)  ->  ElevenLabs  ->  speakers
-
-    If the stream goes quiet for KAREN_TIMEOUT_SECS, Karen fills the dead air.
-    When real chunks resume, recovering_from_karen=True causes Haiku to open
-    with a self-aware pivot back to the code topic.
+    Flushes at paragraph or sentence boundaries once CHUNK_MIN_CHARS is reached.
+    Receives None as sentinel to flush the remaining buffer and stop.
     """
     buffer            = ""
     recent: list[str] = []
-    karen_mode        = False
-    karen_count       = 0
 
-    def flush(text: str, recovering: bool = False) -> None:
-        nonlocal karen_mode, karen_count
+    def flush(text: str) -> None:
         if not text.strip() or el is None:
             return
         try:
-            narration = refactor_chunk(anthropic_client, text, recent, recovering)
+            narration = refactor_chunk(anthropic_client, text, recent)
             if _is_silent(narration):
                 print("[narrator] (silent — nothing new)")
                 return
             recent.append(narration)
             if len(recent) > 6:
                 recent.pop(0)
-            karen_mode  = False
-            karen_count = 0
             print(f"[narrator] {narration}")
             _speak(el, narration)
         except Exception as exc:
@@ -203,7 +159,7 @@ def _narrator_worker(
         # 1. Paragraph break
         para_idx = buffer.rfind("\n\n")
         if para_idx != -1:
-            flush(buffer[: para_idx + 2].strip(), recovering=karen_mode)
+            flush(buffer[: para_idx + 2].strip())
             buffer = buffer[para_idx + 2:]
             return
 
@@ -211,39 +167,20 @@ def _narrator_worker(
         matches = list(_SENTENCE_END_RE.finditer(buffer))
         if matches:
             split = matches[-1].end()
-            flush(buffer[:split].strip(), recovering=karen_mode)
+            flush(buffer[:split].strip())
             buffer = buffer[split:]
             return
 
         # 3. Hard ceiling
         if len(buffer) >= CHUNK_MAX_CHARS:
-            flush(buffer, recovering=karen_mode)
+            flush(buffer)
             buffer = ""
 
     while True:
-        try:
-            # ── wait for next chunk, with Karen timeout ──────────────────────
-            chunk = thinking_q.get(timeout=KAREN_TIMEOUT_SECS)
-
-        except queue.Empty:
-            # Stream stalled — flush any partial buffer first
-            if buffer:
-                flush(buffer, recovering=karen_mode)
-                buffer = ""
-            # Then Karen fills the silence
-            if el is not None:
-                try:
-                    karen_text = _generate_karen_ramble(anthropic_client, karen_count)
-                    karen_count += 1
-                    karen_mode = True
-                    print(f"[karen]    {karen_text}")
-                    _speak(el, karen_text)
-                except Exception as exc:
-                    print(f"[karen] error: {exc}")
-            continue
+        chunk = thinking_q.get()
 
         if chunk is None:           # sentinel — stream finished
-            flush(buffer, recovering=karen_mode)
+            flush(buffer)
             return
 
         buffer += chunk
