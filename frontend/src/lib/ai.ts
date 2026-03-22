@@ -9,6 +9,70 @@ function getHeaders(): Record<string, string> {
   return headers
 }
 
+function getNotionHeaders(): Record<string, string> {
+  const headers = getHeaders()
+  const token = localStorage.getItem('vibe_notion_token')
+  if (token) headers['X-Notion-Token'] = token
+  return headers
+}
+
+// ── Notion API helpers ────────────────────────────────────────────────────────
+
+export async function notionExchangeCode(code: string): Promise<{ access_token: string; workspace_id: string; workspace_name: string; bot_id: string }> {
+  const res = await fetch(`${API}/api/notion/auth/exchange`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ code }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { detail?: string }
+    throw new Error(err.detail || `Notion auth error ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function notionListDatabases(notionToken: string): Promise<{ databases: { id: string; title: string }[] }> {
+  const res = await fetch(`${API}/api/notion/databases`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'X-Notion-Token': notionToken },
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { detail?: string }
+    throw new Error(err.detail || `Notion error ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function notionQueryDatabase(notionToken: string, databaseId: string): Promise<{ fields: Field[]; records: Record<string, unknown>[] }> {
+  const res = await fetch(`${API}/api/notion/database/${databaseId}/query`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'X-Notion-Token': notionToken },
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { detail?: string }
+    throw new Error(err.detail || `Notion error ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function notionPushDatabase(notionToken: string, databaseId: string, records: Record<string, unknown>[], fields: Field[]): Promise<{ updated: number; created: number }> {
+  const res = await fetch(`${API}/api/notion/database/${databaseId}/push`, {
+    method: 'POST',
+    headers: { ...getHeaders(), 'X-Notion-Token': notionToken },
+    body: JSON.stringify({ records, fields }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { detail?: string }
+    throw new Error(err.detail || `Notion error ${res.status}`)
+  }
+  return res.json()
+}
+
+// Keep getNotionHeaders for future use
+export { getNotionHeaders }
+
 async function post(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(`${API}${path}`, {
     method: 'POST',
