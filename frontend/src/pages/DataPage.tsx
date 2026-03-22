@@ -772,7 +772,7 @@ const styles = {
 
   sourceGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, marginBottom: 28 },
   sourceCard: {
-    border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+    border: '1px solid var(--border)', borderRadius: 'var(--radius)', borderColor: 'var(--border)',
     padding: 16, background: 'var(--bg)', cursor: 'pointer', transition: 'all 0.15s',
   },
   sourceCardActive: { borderColor: 'var(--accent)', background: 'var(--accent-s)' },

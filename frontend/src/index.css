@@ -1,106 +1,55 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;500;700&family=Rajdhani:wght@400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
-
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body, #root {
   height: 100%;
   overflow: hidden;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'DM Sans', sans-serif;
   font-size: 14px;
-  color: #e8e4d9;
-  background: #0a0908;
+  color: #f0eeff;
+  background: #1c1a2e;
   -webkit-font-smoothing: antialiased;
 }
 
 :root {
-  /* Core palette — cursed energy dark */
-  --bg:        #0a0908;
-  --bg2:       #111009;
-  --bg3:       #1a1810;
-  --bg4:       #252218;
-  --sidebar:   #0d0c08;
-  --border:    #2a2720;
-  --border2:   #3a362a;
+  /* Backgrounds — deep indigo-dark, not black */
+  --bg:        #1c1a2e;
+  --bg2:       #161428;
+  --bg3:       #211f38;
+  --bg4:       #2c2a48;
+  --sidebar:   #161428;
+  --border:    #2e2c4a;
+  --border2:   #3d3b60;
 
-  /* Text */
-  --text:      #f0ece2;
-  --text2:     #bab29e;
-  --text3:     #7a7060;
+  /* Text — bright so it's legible on dark bg */
+  --text:      #f0eeff;
+  --text2:     #b8b4d8;
+  --text3:     #706c96;
 
-  /* Cursed energy accent — electric blue-violet */
-  --accent:    #4fc3f7;
-  --accent-s:  rgba(79,195,247,0.08);
-  --accent-m:  rgba(79,195,247,0.18);
+  /* Accent — electric blue-violet, JJK cursed energy */
+  --accent:    #7c6af5;
+  --accent-s:  rgba(124,106,245,0.18);
+  --accent-m:  rgba(124,106,245,0.28);
 
-  /* Semantic colors */
-  --red:       #ff4d4d;
-  --green:     #39d98a;
-  --yellow:    #f5c842;
+  --red:       #f06060;
+  --green:     #3dd68c;
+  --yellow:    #f0c040;
   --blue:      #4fc3f7;
-  --orange:    #ff8c42;
+  --orange:    #f59550;
   --purple:    #b388ff;
-
-  --radius:    4px;
-  --shadow:    0 1px 4px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.4);
-  --shadow-md: 0 4px 24px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.4);
-
-  /* JJK glow effects */
-  --glow:      0 0 12px rgba(79,195,247,0.35), 0 0 32px rgba(79,195,247,0.12);
-  --glow-sm:   0 0 6px rgba(79,195,247,0.25);
+  --radius:    6px;
+  --shadow:    0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.4), 0 2px 6px rgba(0,0,0,0.2);
 }
 
-/* Cursed energy background pattern */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 39px,
-      rgba(79,195,247,0.025) 39px,
-      rgba(79,195,247,0.025) 40px
-    ),
-    repeating-linear-gradient(
-      90deg,
-      transparent,
-      transparent 39px,
-      rgba(79,195,247,0.025) 39px,
-      rgba(79,195,247,0.025) 40px
-    );
-  pointer-events: none;
-  z-index: 0;
-}
-
-#root { position: relative; z-index: 1; }
-
-button { cursor: pointer; font-family: 'Rajdhani', sans-serif; letter-spacing: 0.04em; }
-input, textarea, select { font-family: 'Rajdhani', sans-serif; }
+button { cursor: pointer; font-family: inherit; }
+input, textarea, select { font-family: inherit; }
 a { color: inherit; text-decoration: none; }
-*:focus { outline: none; }
 
 /* Scrollbars */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--border2) transparent;
 }
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
-
-/* Cursed energy selection */
-::selection {
-  background: rgba(79,195,247,0.25);
-  color: #fff;
-}
-
-/* Kanji-inspired decorative corner clips on panels */
-@keyframes cursedPulse {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
