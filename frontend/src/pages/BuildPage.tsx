@@ -41,6 +41,8 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
   const [prompt, setPrompt]               = useState('')
   const [building, setBuilding]           = useState(false)
   const [error, setError]                 = useState('')
+  const [showEditTip, setShowEditTip]     = useState(false)
+  const hasApiKey = !!localStorage.getItem('vibe_anthropic_key')
   const [progress, setProgress]           = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set())
@@ -54,7 +56,7 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
   const bgmRef = useRef<HTMLAudioElement>(null)
 
   // Reset edit bar when switching apps
-  useEffect(() => { setEditOpen(false); setEditPrompt(''); setEditError('') }, [activeAppId])
+  useEffect(() => { setEditOpen(false); setEditPrompt(''); setEditError(''); setShowEditTip(false) }, [activeAppId])
 
   function toggleSource(id: string) {
     setSelectedSourceIds(prev => {
@@ -190,6 +192,7 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
       setProgress(100)
       setPrompt('')
       setSelectedSourceIds(new Set())
+      setShowEditTip(true)
       onSelectApp(app.id)
 
     } catch (err) {
@@ -329,6 +332,14 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
             <div style={styles.pageSub}>Describe any app. It reads your real data automatically.</div>
           </div>
 
+          {/* API key warning */}
+          {!hasApiKey && (
+            <div style={styles.warningCallout}>
+              <span>⚠️</span>
+              <span>No Claude API key set — open <strong>Settings</strong> (bottom-left) to add yours before building.</span>
+            </div>
+          )}
+
           {/* Data context callout */}
           {sources.length > 0 ? (
             <div style={styles.calloutAccent}>
@@ -444,6 +455,13 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
               Delete
             </button>
           </div>
+          {showEditTip && (
+            <div style={styles.editTip}>
+              <span>💡</span>
+              <span>If the app looks incomplete or has issues, click <strong>✏️ Edit</strong> above and ask the AI to fix or continue it.</span>
+              <button style={styles.editTipDismiss} onClick={() => setShowEditTip(false)}>✕</button>
+            </div>
+          )}
           <iframe
             ref={frameRef}
             style={styles.iframe}
@@ -498,6 +516,9 @@ const styles = {
 
   callout: { display: 'flex', alignItems: 'flex-start', gap: 10, background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px 14px', marginBottom: 20, fontSize: 13.5, color: 'var(--text2)', lineHeight: 1.6 },
   calloutAccent: { display: 'flex', alignItems: 'flex-start', gap: 10, background: 'var(--accent-s)', border: '1px solid rgba(124,106,245,0.2)', borderRadius: 'var(--radius)', padding: '12px 14px', marginBottom: 20, fontSize: 13.5, color: 'var(--text2)', lineHeight: 1.6 },
+  warningCallout: { display: 'flex', alignItems: 'flex-start', gap: 10, background: 'rgba(224,145,0,0.08)', border: '1px solid rgba(224,145,0,0.28)', borderRadius: 'var(--radius)', padding: '12px 14px', marginBottom: 20, fontSize: 13.5, color: '#7a5200', lineHeight: 1.6 },
+  editTip: { display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(124,106,245,0.07)', borderBottom: '1px solid rgba(124,106,245,0.15)', padding: '9px 18px', fontSize: 13, color: 'var(--text2)', flexShrink: 0 },
+  editTipDismiss: { marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 13, padding: '0 2px', flexShrink: 0 },
 
   errorMsg: { background: 'rgba(224,62,62,0.07)', border: '1px solid rgba(224,62,62,0.2)', color: 'var(--red)', padding: '10px 14px', borderRadius: 'var(--radius)', fontSize: 13, marginBottom: 14 },
 

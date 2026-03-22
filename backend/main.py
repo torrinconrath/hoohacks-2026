@@ -645,7 +645,7 @@ Design requirements:
                         app_system=app_system,
                         user_prompt=f"Build: {req.prompt}{data_ctx}",
                         narrator=narrator,
-                        max_tokens=8000,
+                        max_tokens=12000,
                     )
                 )
             except Exception:

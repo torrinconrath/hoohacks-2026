@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
+import type { NotionConnection } from '../hooks/useNotion'
 
 interface NotionCallbackPageProps {
-  onConnect: (code: string) => Promise<void>
+  onConnect: (code: string) => Promise<NotionConnection>
   onDone: () => void
 }
 
