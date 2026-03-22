@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import type { Source, App } from '../types'
+import SettingsModal from './SettingsModal'
 
 interface SidebarProps {
   user: User
@@ -26,6 +27,9 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 export default function Sidebar({ user, sources, apps, activeView, activeSourceId, activeAppId, onNav, onSelectSource, onSelectApp }: SidebarProps) {
+  const [showSettings, setShowSettings] = useState(false)
+  const hasKey = !!localStorage.getItem('vibe_anthropic_key')
+
   return (
     <aside style={styles.sidebar}>
       {/* Workspace header */}
@@ -98,8 +102,16 @@ export default function Sidebar({ user, sources, apps, activeView, activeSourceI
       {/* User footer */}
       <div style={styles.footer}>
         <div style={styles.footerEmail}>{user.email}</div>
+        <button
+          style={{ ...styles.signOut, color: hasKey ? 'var(--text3)' : '#e07b00' }}
+          onClick={() => setShowSettings(true)}
+          title={hasKey ? 'Settings' : 'API key required — click to add'}
+        >
+          {hasKey ? '⚙' : '⚠ Key'}
+        </button>
         <button style={styles.signOut} onClick={() => supabase.auth.signOut()}>Sign out</button>
       </div>
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </aside>
   )
 }

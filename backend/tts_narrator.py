@@ -193,7 +193,8 @@ class AppNarrator:
     """
 
     def __init__(self) -> None:
-        self._anthropic = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        _key = os.getenv("ANTHROPIC_API_KEY", "")
+        self._anthropic = anthropic.Anthropic(api_key=_key) if _key else None
         el_key = os.getenv("ELEVENLABS_API_KEY", "")
         self._el = ElevenLabs(api_key=el_key) if el_key else None
         if not el_key:
@@ -203,14 +204,14 @@ class AppNarrator:
         self._worker_t:  threading.Thread | None  = None
         self._done_event: threading.Event | None  = None
 
-    def start_session(self, output_q: queue.Queue | None = None) -> None:
+    def start_session(self, output_q: queue.Queue | None = None, anthropic_client: anthropic.Anthropic | None = None) -> None:
         if not self._lock.acquire(timeout=30):
             raise RuntimeError("Narrator busy — previous session still draining")
         self._think_q   = queue.Queue()
         self._done_event = threading.Event()
         self._worker_t  = threading.Thread(
             target=_narrator_worker,
-            args=(self._anthropic, self._el, self._think_q, output_q, self._done_event),
+            args=(anthropic_client or self._anthropic, self._el, self._think_q, output_q, self._done_event),
             daemon=True,
         )
         self._worker_t.start()
