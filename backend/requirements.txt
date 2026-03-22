@@ -27,7 +27,7 @@ MarkupSafe==3.0.3
 mdurl==0.1.2
 orjson==3.11.7
 packaging==26.0
-pydantic==2.7.1
+pydantic==2.8.0
 pydantic_core==2.18.2
 Pygments==2.19.2
 python-dotenv==1.0.1
