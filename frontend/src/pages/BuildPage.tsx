@@ -153,6 +153,11 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
     if (!editPrompt.trim() || !activeApp) return
     setEditing(true); setEditError('')
     setEditProgress(10); setEditProgressLabel('Planning changes…')
+    if (bgmRef.current) {
+      bgmRef.current.currentTime = 0
+      bgmRef.current.volume = 0.2
+      bgmRef.current.play().catch(() => {})
+    }
 
     try {
       const linkedSources = sources.filter(s => activeApp.source_ids?.includes(s.id))
@@ -182,6 +187,10 @@ export default function BuildPage({ sources, getRecords, apps, saveApp, updateAp
       setEditError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
       setEditing(false); setEditProgress(0)
+      if (bgmRef.current) {
+        bgmRef.current.pause()
+        bgmRef.current.currentTime = 0
+      }
     }
   }
 
