@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Vibe** — an AI-powered personal productivity app generator built at HooHacks 2026. Users manage structured data sources and prompt Claude to generate custom HTML5 apps that read/write that data.
+**Mugen** — an AI-powered personal productivity app generator built at HooHacks 2026. Users manage structured data sources and prompt Claude to generate custom HTML5 apps that read/write that data.
 
 ## Commands
 
