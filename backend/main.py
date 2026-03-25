@@ -613,6 +613,7 @@ Structure:
 - Put all CSS in a <style> tag in <head> (Google Fonts via @import url())
 - Put a <div id="root"></div> in <body>
 - Write the entire app as a <script type="text/babel"> block
+- IMPORTANT: Use the frontend design skill where applicable
 
 CDN URLs to use (exactly):
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
