@@ -2,6 +2,8 @@
 
 **Mugen** is an AI-powered personal productivity app generator built at HooHacks 2026. Describe any app you want — a habit tracker, spending dashboard, mood journal — and Mugen builds it instantly as a fully functional React app, pre-filled with your own real data. Basically imagine Notion but with an AI powered application layer where you can take your databases and use them together to make tailored frontends and interfaces to use your data in customizable and tailored ways.
 
+**HooHacks 2026 Winner MLH: Best Use of ElevenLabs:** [mugenai.devpost.com](https://devpost.com/software/mugen-ai)  
+
 **Live at:** [mugenai.vercel.app](https://mugenai.vercel.app)  
 **Demo at:** [mugenai.youtube.com](https://www.youtube.com/watch?v=IWGsVBW25Lc)
 
